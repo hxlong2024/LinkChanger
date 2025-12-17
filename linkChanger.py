@@ -1,11 +1,12 @@
 import streamlit as st
+import streamlit.components.v1 as components
 import requests
 from retrying import retry
 import time
 import re
 import random
 import string
-import traceback
+import json
 from typing import Union, List, Any
 
 # ==========================================
@@ -22,7 +23,6 @@ HEADERS = {
 FIXED_SAVE_PATH = "linkchanger/link"
 FIXED_COOKIE = r"XFI=5610b6a6-9c5b-5af5-2920-01c6f26cd68e; XFCS=F867D20ADD986D508B4FE3FC9808AF594712E01CED1ECEA8A4509FE3681EF65A; XFT=+aWVjJd3bSgnCMTSdWoHwdzzwpN3sEvD6qltd+NJ16U=; PANWEB=1; BAIDU_WISE_UID=wapp_1757493034845_354; scholar_new_version=1; __bid_n=199562b36651328548f06c; scholar_new_detail=1; BIDUPSID=1D0E90A4825BC0724DDDE7091DA86F18; PSTM=1758790941; BAIDUID=1D0E90A4825BC0724DDDE7091DA86F18:SL=0:NR=10:FG=1; BAIDUID_BFESS=1D0E90A4825BC0724DDDE7091DA86F18:SL=0:NR=10:FG=1; MAWEBCUID=web_beWNQkUiLcQQKTWugVChMJZhRTUPPaCiFaATwGLlhjwmIkROOx; ZFY=Ox2DfbvW6ZTnC:ALtyhO:B87488WU3duP6wlSdAlihrp0:C; Hm_lvt_fa0277816200010a74ab7d2895df481b=1762328389; newlogin=1; ploganondeg=1; H_PS_PSSID=60275_63147_65361_65894_65986_66101_66122_66218_66203_66169_66359_66287_66261_66393_66394_66443_66511_66516_66529_66558_66584_66591_66599_66604_66615; H_WISE_SIDS=60275_63147_65361_65894_65986_66101_66122_66218_66203_66169_66359_66287_66261_66393_66394_66443_66511_66516_66529_66558_66584_66591_66599_66604_66615; BDUSS=NXdVgxSXBOUmtzR0NzUk80U1dJQ2tDb1p4ZVo1Rm9sWmVKc0NVRmMxUEQxVmxwSVFBQUFBJCQAAAAAAAAAAAEAAAB1B9yX0KGxprXEufvBo7PIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMNIMmnDSDJpTH; BDUSS_BFESS=NXdVgxSXBOUmtzR0NzUk80U1dJQ2tDb1p4ZVo1Rm9sWmVKc0NVRmMxUEQxVmxwSVFBQUFBJCQAAAAAAAAAAAEAAAB1B9yX0KGxprXEufvBo7PIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMNIMmnDSDJpTH; STOKEN=6b758669a4bcfae2afe57badfc0d5b73ac4f9adf9f70d10dedafcd910b50ec61; Hm_lvt_7a3960b6f067eb0085b7f96ff5e660b0=1764034348,1764155073,1764551731,1765087281; BDCLND=EphFZs3F45F%2Bem1Ozl0fXIAgegDn0BKAaY5F4JRQPQA%3D; ZD_ENTRY=bing; PANPSC=3843437961712308433%3Au9Rut0jYI4qfFLw%2F5TJWE1cS2d9ns3O5C61tf8CKQkhoIDnjYJB5kw3MPJHnDhkCz81ttRoL0tAiVxZWCjKhbOJEKVZg82vZj7FJ7ADqJPsWXujC1eV6KOKEQjOY60ydECuWaePJJP%2B4A0ipQ2gQX0SbgxEKExKM0oUakcVUn8vvFIVZmIcELSHq5mg%2FcPBD1h8mCCD3Fkn75SjD4q9rtpR00d0Z6OohxASwYanDF8KxzJ2BeBROmwWMR6ewJUxvytJJL%2BMQEINTBmV4fV02TuU0aYK2SJHYLx2iyOOtLODyPJDZ5fFjQ7Xf7ylHQwl61C1ubP4y%2FN8Mc%2FxAohkhNA%3D%3D; csrfToken=6GJipGLUWpJ88u6IiL03XfYH; Hm_lvt_182d6d59474cf78db37e0b2248640ea5=1765087298,1765977114; HMACCOUNT=729A66B9AF8EBD50; ndut_fmt=FE31FDC675D66019B8D6FF97322125AD358CB961CE4545AF6F65A199A29DB000; ab_sr=1.0.1_NzIzZWM0YmNjNzEwZDFkMDEyYTgzYjdmYmVjYjU5MjcwMDhiZGI4YTAwNTYwODMxNzg4MTA5MDliZWI0ZjA0ZTJlODJlMDcwMTA1ZDBiMWI3NDM0ZDJkMWY1YmVhM2MwZjY3Y2E2ZDI1OTYyZTM1Nzk1NWZiZmQ2YTk2YTA3Y2NkNjc2N2Q3MDgzNTI2ZTdjNTEyY2VmYzQ4Yzc3NWU3Njc0ODM1MThmZTE1NzRmNmVmZmVhZDRmMWJjMjhjMGMx; Hm_lpvt_182d6d59474cf78db37e0b2248640ea5=1765977167"
 
-# 严格的非法字符正则
 INVALID_CHARS_REGEX = re.compile(r'[^\u4e00-\u9fa5a-zA-Z0-9_\-\s]')
 
 
@@ -90,6 +90,68 @@ def parse_response(content: str) -> Union[List[Any], int]:
     return -1
 
 
+def create_copy_button_html(text_to_copy: str):
+    """生成一个可以复制指定文本的HTML按钮"""
+    # 严格转义字符，防止JS报错
+    safe_text = json.dumps(text_to_copy)[1:-1] # 使用json.dumps自动处理转义，并去掉首尾引号
+    
+    html = f"""
+    <style>
+    .copy-btn {{
+        background-color: #f0f2f6;
+        color: #31333F;
+        padding: 0.5rem 1rem;
+        border-radius: 0.5rem;
+        border: 1px solid rgba(49, 51, 63, 0.2);
+        font-family: "Source Sans Pro", sans-serif;
+        font-size: 1rem;
+        cursor: pointer;
+        width: 100%;
+        margin-top: 10px;
+        transition: all 0.2s;
+    }}
+    .copy-btn:hover {{
+        border-color: #ff4b4b;
+        color: #ff4b4b;
+    }}
+    .copy-btn:active {{
+        background-color: #ff4b4b;
+        color: white;
+    }}
+    </style>
+    
+    <script>
+    async function copyToClipboard() {{
+        const text = "{safe_text}";
+        try {{
+            await navigator.clipboard.writeText(text);
+            const btn = document.getElementById("copyBtn");
+            const originalText = btn.innerText;
+            btn.innerText = "✅ 已复制到剪贴板！";
+            btn.style.borderColor = "#09ab3b";
+            btn.style.color = "#09ab3b";
+            setTimeout(() => {{
+                btn.innerText = originalText;
+                btn.style.borderColor = "rgba(49, 51, 63, 0.2)";
+                btn.style.color = "#31333F";
+            }}, 2000);
+        }} catch (err) {{
+            // 备用方案（用于不支持navigator的浏览器或非安全上下文）
+            const textArea = document.createElement("textarea");
+            textArea.value = text;
+            document.body.appendChild(textArea);
+            textArea.select();
+            document.execCommand("copy");
+            document.body.removeChild(textArea);
+            alert("已复制！");
+        }}
+    }}
+    </script>
+    <button id="copyBtn" class="copy-btn" onclick="copyToClipboard()">📋 一键复制结果</button>
+    """
+    return html
+
+
 # ==========================================
 # 第三部分：网络请求类
 # ==========================================
@@ -99,7 +161,7 @@ class Network:
         self.s = requests.Session()
         self.s.trust_env = False
         self.headers = HEADERS.copy()
-        self.headers['Cookie'] = "".join(FIXED_COOKIE.split()) # 直接使用固定Cookie
+        self.headers['Cookie'] = "".join(FIXED_COOKIE.split())
         self.bdstoken = ''
         requests.packages.urllib3.disable_warnings()
 
@@ -139,9 +201,7 @@ class Network:
     @retry(stop_max_attempt_number=3)
     def create_dir(self, path: str) -> int:
         url = f'{BASE_URL}/api/create'
-        # 确保路径以 / 开头
-        if not path.startswith("/"):
-            path = "/" + path
+        if not path.startswith("/"): path = "/" + path
         data = {'path': path, 'isdir': '1', 'block_list': '[]'}
         params = {'a': 'commit', 'bdstoken': self.bdstoken}
         r = self.s.post(url, params=params, data=data, headers=self.headers, verify=False)
@@ -150,8 +210,7 @@ class Network:
     @retry(stop_max_attempt_number=5)
     def transfer_file(self, params_list: list, path: str) -> int:
         url = f'{BASE_URL}/share/transfer'
-        if not path.startswith("/"):
-            path = "/" + path
+        if not path.startswith("/"): path = "/" + path
         data = {'fsidlist': f"[{','.join(params_list[2])}]", 'path': path}
         params = {'shareid': params_list[0], 'from': params_list[1], 'bdstoken': self.bdstoken}
         r = self.s.post(url, params=params, data=data, headers=self.headers, verify=False)
@@ -169,8 +228,7 @@ class Network:
 
     def get_dir_fsid(self, parent_path: str, target_name: str) -> str:
         url = f'{BASE_URL}/api/list'
-        if not parent_path.startswith("/"):
-            parent_path = "/" + parent_path
+        if not parent_path.startswith("/"): parent_path = "/" + parent_path
         params = {'dir': parent_path, 'bdstoken': self.bdstoken, 'order': 'time', 'desc': '1'}
         r = self.s.get(url, params=params, headers=self.headers, verify=False)
         if r.json()['errno'] == 0:
@@ -253,8 +311,7 @@ def clear_text():
 
 def main():
     st.set_page_config(page_title="转存助手", layout="wide")
-    
-    # 移除了大标题，直接显示输入框
+
     input_text = st.text_area(
         "📝 待处理文本",
         height=200,
@@ -262,15 +319,12 @@ def main():
         key="user_input"
     )
 
-    # 按钮布局调整：开始处理在上方（或左侧），清除在后
     col1, col2 = st.columns([1, 6])
     
     with col1:
-        # 开始按钮放在第一位，使用 primary 强调色
         start_process = st.button("🚀 开始处理", type="primary", use_container_width=True)
     
     with col2:
-        # 清除按钮放在第二位
         st.button("🗑️ 一键清除", on_click=clear_text)
 
     if start_process:
@@ -281,7 +335,6 @@ def main():
         processed_text = clean_quark_links(input_text)
         network = Network()
 
-        # 日志区域默认折叠 (expanded=False)
         with st.status("正在自动化处理...", expanded=False) as status:
             token = network.get_bdstoken()
             if isinstance(token, int):
@@ -314,8 +367,12 @@ def main():
 
         if success_count > 0:
             st.subheader("🎉 处理结果")
-            # 使用 st.code 显示结果，Streamlit 会自动在右上角提供“复制”按钮
-            st.code(final_text, language="text")
+            
+            # 1. 使用文本框展示结果 (方便手动选择/编辑)
+            st.text_area("结果内容", value=final_text, height=300, label_visibility="collapsed")
+            
+            # 2. 嵌入JS脚本的HTML按钮，实现“一键复制”
+            components.html(create_copy_button_html(final_text), height=60)
 
 
 if __name__ == '__main__':
