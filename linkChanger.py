@@ -18,7 +18,11 @@ HEADERS = {
     'Referer': 'https://pan.baidu.com',
 }
 
-# 严格的非法字符正则：除了 汉字、字母、数字、下划线、横线、空格 以外的全部视为非法
+# 用户指定的固定配置
+FIXED_SAVE_PATH = "linkchanger/link"
+FIXED_COOKIE = r"XFI=5610b6a6-9c5b-5af5-2920-01c6f26cd68e; XFCS=F867D20ADD986D508B4FE3FC9808AF594712E01CED1ECEA8A4509FE3681EF65A; XFT=+aWVjJd3bSgnCMTSdWoHwdzzwpN3sEvD6qltd+NJ16U=; PANWEB=1; BAIDU_WISE_UID=wapp_1757493034845_354; scholar_new_version=1; __bid_n=199562b36651328548f06c; scholar_new_detail=1; BIDUPSID=1D0E90A4825BC0724DDDE7091DA86F18; PSTM=1758790941; BAIDUID=1D0E90A4825BC0724DDDE7091DA86F18:SL=0:NR=10:FG=1; BAIDUID_BFESS=1D0E90A4825BC0724DDDE7091DA86F18:SL=0:NR=10:FG=1; MAWEBCUID=web_beWNQkUiLcQQKTWugVChMJZhRTUPPaCiFaATwGLlhjwmIkROOx; ZFY=Ox2DfbvW6ZTnC:ALtyhO:B87488WU3duP6wlSdAlihrp0:C; Hm_lvt_fa0277816200010a74ab7d2895df481b=1762328389; newlogin=1; ploganondeg=1; H_PS_PSSID=60275_63147_65361_65894_65986_66101_66122_66218_66203_66169_66359_66287_66261_66393_66394_66443_66511_66516_66529_66558_66584_66591_66599_66604_66615; H_WISE_SIDS=60275_63147_65361_65894_65986_66101_66122_66218_66203_66169_66359_66287_66261_66393_66394_66443_66511_66516_66529_66558_66584_66591_66599_66604_66615; BDUSS=NXdVgxSXBOUmtzR0NzUk80U1dJQ2tDb1p4ZVo1Rm9sWmVKc0NVRmMxUEQxVmxwSVFBQUFBJCQAAAAAAAAAAAEAAAB1B9yX0KGxprXEufvBo7PIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMNIMmnDSDJpTH; BDUSS_BFESS=NXdVgxSXBOUmtzR0NzUk80U1dJQ2tDb1p4ZVo1Rm9sWmVKc0NVRmMxUEQxVmxwSVFBQUFBJCQAAAAAAAAAAAEAAAB1B9yX0KGxprXEufvBo7PIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMNIMmnDSDJpTH; STOKEN=6b758669a4bcfae2afe57badfc0d5b73ac4f9adf9f70d10dedafcd910b50ec61; Hm_lvt_7a3960b6f067eb0085b7f96ff5e660b0=1764034348,1764155073,1764551731,1765087281; BDCLND=EphFZs3F45F%2Bem1Ozl0fXIAgegDn0BKAaY5F4JRQPQA%3D; ZD_ENTRY=bing; PANPSC=3843437961712308433%3Au9Rut0jYI4qfFLw%2F5TJWE1cS2d9ns3O5C61tf8CKQkhoIDnjYJB5kw3MPJHnDhkCz81ttRoL0tAiVxZWCjKhbOJEKVZg82vZj7FJ7ADqJPsWXujC1eV6KOKEQjOY60ydECuWaePJJP%2B4A0ipQ2gQX0SbgxEKExKM0oUakcVUn8vvFIVZmIcELSHq5mg%2FcPBD1h8mCCD3Fkn75SjD4q9rtpR00d0Z6OohxASwYanDF8KxzJ2BeBROmwWMR6ewJUxvytJJL%2BMQEINTBmV4fV02TuU0aYK2SJHYLx2iyOOtLODyPJDZ5fFjQ7Xf7ylHQwl61C1ubP4y%2FN8Mc%2FxAohkhNA%3D%3D; csrfToken=6GJipGLUWpJ88u6IiL03XfYH; Hm_lvt_182d6d59474cf78db37e0b2248640ea5=1765087298,1765977114; HMACCOUNT=729A66B9AF8EBD50; ndut_fmt=FE31FDC675D66019B8D6FF97322125AD358CB961CE4545AF6F65A199A29DB000; ab_sr=1.0.1_NzIzZWM0YmNjNzEwZDFkMDEyYTgzYjdmYmVjYjU5MjcwMDhiZGI4YTAwNTYwODMxNzg4MTA5MDliZWI0ZjA0ZTJlODJlMDcwMTA1ZDBiMWI3NDM0ZDJkMWY1YmVhM2MwZjY3Y2E2ZDI1OTYyZTM1Nzk1NWZiZmQ2YTk2YTA3Y2NkNjc2N2Q3MDgzNTI2ZTdjNTEyY2VmYzQ4Yzc3NWU3Njc0ODM1MThmZTE1NzRmNmVmZmVhZDRmMWJjMjhjMGMx; Hm_lpvt_182d6d59474cf78db37e0b2248640ea5=1765977167"
+
+# 严格的非法字符正则
 INVALID_CHARS_REGEX = re.compile(r'[^\u4e00-\u9fa5a-zA-Z0-9_\-\s]')
 
 
@@ -27,23 +31,14 @@ INVALID_CHARS_REGEX = re.compile(r'[^\u4e00-\u9fa5a-zA-Z0-9_\-\s]')
 # ==========================================
 
 def sanitize_filename(name: str) -> str:
-    """
-    强力清洗文件名
-    只保留：中文、英文、数字、下划线、横线、空格
-    去除：Emoji、特殊符号(【】[]()...)、控制符等
-    """
     if not name: return ""
-    # 替换常见干扰符为空格
     name = re.sub(r'[【】\[\]()]', ' ', name)
-    # 替换所有非白名单字符为空字符串
     clean_name = INVALID_CHARS_REGEX.sub('', name)
-    # 将连续空格合并为一个，并去除首尾空格
     clean_name = re.sub(r'\s+', ' ', clean_name).strip()
     return clean_name
 
 
 def extract_folder_name(full_text: str, match_start: int) -> str:
-    """智能提取文件夹名称"""
     lookback_limit = max(0, match_start - 200)
     pre_text = full_text[lookback_limit:match_start]
     lines = pre_text.splitlines()
@@ -52,29 +47,21 @@ def extract_folder_name(full_text: str, match_start: int) -> str:
     for line in reversed(lines):
         clean_line = line.strip()
         if not clean_line: continue
-        # 跳过纯提示词行
         if re.match(r'^(百度|链接|提取码|:|：|https?|夸克)*$', clean_line, re.IGNORECASE):
             continue
-
-        # 移除行内的干扰词
         clean_line = re.sub(r'(百度|链接|提取码|:|：|pwd|夸克).*$', '', clean_line, flags=re.IGNORECASE).strip()
 
         if clean_line:
             candidate_name = clean_line
             break
 
-    # 清洗名字
     final_name = sanitize_filename(candidate_name)
-
-    # 如果清洗后名字太短或为空，返回None(指示后续使用默认名)
     if not final_name or len(final_name) < 2:
         return None
-
-    return final_name[:50]  # 截断长度
+    return final_name[:50]
 
 
 def clean_quark_links(text: str) -> str:
-    """剔除夸克网盘链接及其整行"""
     return re.sub(r'^.*pan\.quark\.cn.*$[\r\n]*', '', text, flags=re.MULTILINE)
 
 
@@ -112,6 +99,7 @@ class Network:
         self.s = requests.Session()
         self.s.trust_env = False
         self.headers = HEADERS.copy()
+        self.headers['Cookie'] = "".join(FIXED_COOKIE.split()) # 直接使用固定Cookie
         self.bdstoken = ''
         requests.packages.urllib3.disable_warnings()
 
@@ -151,6 +139,9 @@ class Network:
     @retry(stop_max_attempt_number=3)
     def create_dir(self, path: str) -> int:
         url = f'{BASE_URL}/api/create'
+        # 确保路径以 / 开头
+        if not path.startswith("/"):
+            path = "/" + path
         data = {'path': path, 'isdir': '1', 'block_list': '[]'}
         params = {'a': 'commit', 'bdstoken': self.bdstoken}
         r = self.s.post(url, params=params, data=data, headers=self.headers, verify=False)
@@ -159,7 +150,9 @@ class Network:
     @retry(stop_max_attempt_number=5)
     def transfer_file(self, params_list: list, path: str) -> int:
         url = f'{BASE_URL}/share/transfer'
-        data = {'fsidlist': f"[{','.join(params_list[2])}]", 'path': f'/{path}'}
+        if not path.startswith("/"):
+            path = "/" + path
+        data = {'fsidlist': f"[{','.join(params_list[2])}]", 'path': path}
         params = {'shareid': params_list[0], 'from': params_list[1], 'bdstoken': self.bdstoken}
         r = self.s.post(url, params=params, data=data, headers=self.headers, verify=False)
         return r.json()['errno']
@@ -176,6 +169,8 @@ class Network:
 
     def get_dir_fsid(self, parent_path: str, target_name: str) -> str:
         url = f'{BASE_URL}/api/list'
+        if not parent_path.startswith("/"):
+            parent_path = "/" + parent_path
         params = {'dir': parent_path, 'bdstoken': self.bdstoken, 'order': 'time', 'desc': '1'}
         r = self.s.get(url, params=params, headers=self.headers, verify=False)
         if r.json()['errno'] == 0:
@@ -191,22 +186,17 @@ class Network:
 
 def process_single_link(network, match, full_text, root_path):
     url = match.group(1)
-
-    # 1. 提取提取码
     pwd_match = re.search(r'(?:\?pwd=|&pwd=|\s+|提取码[:：]?\s*)([a-zA-Z0-9]{4})', match.group(0))
     pwd = pwd_match.group(1) if pwd_match else ""
     clean_url = url.split('?')[0]
 
-    # 2. 智能提取文件夹名 (含严格清洗)
     folder_name = extract_folder_name(full_text, match.start())
-    # 如果提取失败，使用默认时间戳名
     if not folder_name:
         folder_name = f"Resource_{int(time.time())}"
         st.write(f"⚠️ 无法提取有效名称，使用默认名: **{folder_name}**")
     else:
-        st.write(f"📂 识别并净化资源名为: **{folder_name}**")
+        st.write(f"📂 识别资源名: **{folder_name}**")
 
-    # 3. 验证链接
     if pwd:
         res = network.verify_pass_code(clean_url, pwd)
         if isinstance(res, int):
@@ -214,103 +204,85 @@ def process_single_link(network, match, full_text, root_path):
             return None
         network.headers['Cookie'] = update_cookie(res, network.headers['Cookie'])
 
-    # 4. 获取参数
     content = network.get_transfer_params(clean_url)
     params = parse_response(content)
     if params == -1:
-        st.error(f"❌ 链接解析失败 ({clean_url}) - 可能是死链或Cookie过期")
+        st.error(f"❌ 链接解析失败 ({clean_url})")
         return None
 
-    # 5. 创建文件夹 & 转存 (核心修复逻辑：失败重试机制)
-
-    # 尝试一：使用提取的名字 + 随机码
     safe_suffix = generate_code()
     final_folder_name = f"{folder_name}_{safe_suffix}"
     full_save_path = f"{root_path}/{final_folder_name}"
 
-    network.create_dir(root_path)  # 确保根目录存在
-
+    network.create_dir(root_path)
     create_res = network.create_dir(full_save_path)
 
-    # 如果创建失败（且不是因为文件夹已存在），则降级尝试
     if create_res != 0 and create_res != -8:
-        st.warning(f"⚠️ 使用名称 '{final_folder_name}' 创建目录失败 (代码: {create_res})，尝试使用安全时间戳名称...")
-
-        # 尝试二：完全安全的纯时间戳名称
+        st.warning(f"⚠️ 目录创建失败 (代码: {create_res})，尝试安全名...")
         final_folder_name = f"Transfer_{int(time.time())}_{safe_suffix}"
         full_save_path = f"{root_path}/{final_folder_name}"
         create_res_retry = network.create_dir(full_save_path)
-
         if create_res_retry != 0 and create_res_retry != -8:
-            st.error(f"❌ 目录创建彻底失败 (代码: {create_res_retry})，跳过此任务。")
+            st.error(f"❌ 目录创建失败，跳过。")
             return None
-        st.write(f"✅ 已切换为安全目录名: {final_folder_name}")
 
-    # 执行转存
     transfer_res = network.transfer_file(params, full_save_path)
     if transfer_res != 0:
-        st.error(f"❌ 转存文件失败 (代码: {transfer_res}) - 请检查网盘空间或文件数量限制")
+        st.error(f"❌ 转存文件失败 (代码: {transfer_res})")
         return None
 
-    # 6. 分享
-    fs_id = network.get_dir_fsid(f"/{root_path}", final_folder_name)
+    fs_id = network.get_dir_fsid(root_path, final_folder_name)
     if not fs_id:
-        st.error("❌ 转存后无法获取文件夹ID，无法分享")
+        st.error("❌ 无法获取文件夹ID")
         return None
 
     new_pwd = generate_code()
     share_link = network.create_share(fs_id, new_pwd)
 
     if isinstance(share_link, int):
-        st.error(f"❌ 创建分享链接失败 (代码: {share_link})")
+        st.error(f"❌ 分享失败 (代码: {share_link})")
         return None
 
     st.success(f"✅ 处理成功！")
     return f"{share_link}?pwd={new_pwd}"
 
 
-# 回调函数：清除文本框状态
 def clear_text():
     st.session_state["user_input"] = ""
 
 
 def main():
-    st.set_page_config(page_title="百度网盘转存助手", layout="wide")
-    st.title("🔄 百度网盘智能转存 (修复版)")
-
-    with st.sidebar:
-        cookie = st.text_area("输入Cookie (必填)", height=150)
-        root_path = st.text_input("网盘保存路径", value="我的自动转存资源")
-
-    # 文本框绑定 key="user_input"，以便在 session_state 中管理
+    st.set_page_config(page_title="转存助手", layout="wide")
+    
+    # 移除了大标题，直接显示输入框
     input_text = st.text_area(
-        "📝 输入文本",
+        "📝 待处理文本",
         height=200,
-        placeholder="粘贴包含链接的文本，程序将自动净化文件名并转存...",
+        placeholder="在此粘贴包含链接的文本...",
         key="user_input"
     )
 
-    # 按钮布局：一键清除 与 开始处理
+    # 按钮布局调整：开始处理在上方（或左侧），清除在后
     col1, col2 = st.columns([1, 6])
-
+    
     with col1:
+        # 开始按钮放在第一位，使用 primary 强调色
+        start_process = st.button("🚀 开始处理", type="primary", use_container_width=True)
+    
+    with col2:
+        # 清除按钮放在第二位
         st.button("🗑️ 一键清除", on_click=clear_text)
 
-    with col2:
-        start_process = st.button("🚀 开始处理", type="primary")
-
     if start_process:
-        if not cookie:
-            st.warning("请先输入 Cookie")
+        if not input_text:
+            st.warning("请先输入文本")
             st.stop()
 
-        # 1. 预处理
         processed_text = clean_quark_links(input_text)
-
         network = Network()
-        network.headers['Cookie'] = "".join(cookie.split())
 
-        with st.status("正在自动化处理 (点击展开详情)...", expanded=True) as status:
+        # 日志区域默认折叠 (expanded=False)
+        with st.status("正在自动化处理...", expanded=False) as status:
             token = network.get_bdstoken()
             if isinstance(token, int):
                 status.update(label=f"❌ Cookie 无效 (代码: {token})", state="error")
@@ -327,22 +299,22 @@ def main():
             final_text = processed_text
             success_count = 0
 
-            # 倒序处理
             for match in reversed(matches):
-                st.divider()  # 分隔线
-                new_link = process_single_link(network, match, processed_text, root_path)
+                st.divider()
+                new_link = process_single_link(network, match, processed_text, FIXED_SAVE_PATH)
                 if new_link:
                     start, end = match.span()
                     final_text = final_text[:start] + new_link + final_text[end:]
                     success_count += 1
 
             if success_count > 0:
-                status.update(label=f"✅ 全部完成！成功处理 {success_count} 个链接", state="complete")
+                status.update(label=f"✅ 完成！处理了 {success_count} 个链接", state="complete")
             else:
-                status.update(label="⚠️ 处理完成，但没有成功转存任何链接", state="error")
+                status.update(label="⚠️ 完成，但无成功链接", state="error")
 
         if success_count > 0:
-            st.subheader("🎉 处理结果 (点击右上角复制)")
+            st.subheader("🎉 处理结果")
+            # 使用 st.code 显示结果，Streamlit 会自动在右上角提供“复制”按钮
             st.code(final_text, language="text")
 
 
