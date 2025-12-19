@@ -92,8 +92,7 @@ def parse_response(content: str) -> Union[List[Any], int]:
 
 def create_copy_button_html(text_to_copy: str):
     """生成一个可以复制指定文本的HTML按钮"""
-    # 严格转义字符，防止JS报错
-    safe_text = json.dumps(text_to_copy)[1:-1] # 使用json.dumps自动处理转义，并去掉首尾引号
+    safe_text = json.dumps(text_to_copy)[1:-1]
     
     html = f"""
     <style>
@@ -136,7 +135,6 @@ def create_copy_button_html(text_to_copy: str):
                 btn.style.color = "#31333F";
             }}, 2000);
         }} catch (err) {{
-            // 备用方案（用于不支持navigator的浏览器或非安全上下文）
             const textArea = document.createElement("textarea");
             textArea.value = text;
             document.body.appendChild(textArea);
@@ -216,6 +214,22 @@ class Network:
         r = self.s.post(url, params=params, data=data, headers=self.headers, verify=False)
         return r.json()['errno']
 
+    # --- 新增：删除文件方法 ---
+    @retry(stop_max_attempt_number=3)
+    def delete_file(self, path: str) -> int:
+        """删除指定文件或文件夹"""
+        url = f'{BASE_URL}/api/filemanager'
+        if not path.startswith("/"): path = "/" + path
+        data = {'filelist': f'["{path}"]'}
+        params = {'oper': 'delete', 'bdstoken': self.bdstoken}
+        try:
+            r = self.s.post(url, params=params, data=data, headers=self.headers, verify=False)
+            if 'errno' in r.json():
+                return r.json()['errno']
+            return -1
+        except:
+            return -1
+
     @retry(stop_max_attempt_number=3)
     def create_share(self, fs_id: str, pwd: str) -> Union[str, int]:
         url = f'{BASE_URL}/share/set'
@@ -284,10 +298,18 @@ def process_single_link(network, match, full_text, root_path):
             st.error(f"❌ 目录创建失败，跳过。")
             return None
 
+    # --- 转存并处理失败情况 ---
     transfer_res = network.transfer_file(params, full_save_path)
     if transfer_res != 0:
-        st.error(f"❌ 转存文件失败 (代码: {transfer_res})")
+        st.error(f"❌ 转存文件失败 (代码: {transfer_res})，正在清理空文件夹...")
+        # 失败时立即删除空文件夹
+        del_res = network.delete_file(full_save_path)
+        if del_res == 0:
+            st.info(f"🧹 已自动删除无效目录: {final_folder_name}")
+        else:
+            st.warning(f"⚠️ 自动清理失败，请手动删除: {final_folder_name}")
         return None
+    # -----------------------
 
     fs_id = network.get_dir_fsid(root_path, final_folder_name)
     if not fs_id:
@@ -368,10 +390,10 @@ def main():
         if success_count > 0:
             st.subheader("🎉 处理结果")
             
-            # 1. 使用文本框展示结果 (方便手动选择/编辑)
+            # 1. 使用文本框展示结果
             st.text_area("结果内容", value=final_text, height=300, label_visibility="collapsed")
             
-            # 2. 嵌入JS脚本的HTML按钮，实现“一键复制”
+            # 2. 嵌入JS脚本的HTML按钮
             components.html(create_copy_button_html(final_text), height=60)
 
 
