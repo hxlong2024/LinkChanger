@@ -1,52 +1,59 @@
 import streamlit as st
 import streamlit.components.v1 as components
+import httpx
 import requests
-from retrying import retry
-import time
+import asyncio
 import re
+import time
 import random
 import string
 import json
+from datetime import datetime
 from typing import Union, List, Any
+from retrying import retry
 
 # ==========================================
-# 第一部分：Streamlit 页面配置
+# 第一部分：页面配置与全局样式
 # ==========================================
-
 st.set_page_config(
-    page_title="转存助手 Pro",
-    page_icon="🔗",
+    page_title="网盘转存助手 Ultimate",
+    page_icon="⚡",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
+st.markdown("""
+    <style>
+    .stTextArea textarea { font-family: 'Source Code Pro', monospace; font-size: 14px; }
+    .success-text { color: #09ab3b; font-weight: bold; }
+    /* 优化 Status 组件样式 */
+    .stStatusWidget { border: 1px solid #e0e0e0; border-radius: 8px; }
+    /* 区分两个网盘的标签颜色 */
+    .quark-tag { background-color: #0088ff; color: white; padding: 2px 6px; border-radius: 4px; font-size: 0.8em; margin-right: 5px; }
+    .baidu-tag { background-color: #ff4d4f; color: white; padding: 2px 6px; border-radius: 4px; font-size: 0.8em; margin-right: 5px; }
+    </style>
+""", unsafe_allow_html=True)
+
 # ==========================================
-# 第二部分：配置与常量
+# 第二部分：通用常量与工具函数
 # ==========================================
 
-BASE_URL = 'https://pan.baidu.com'
-HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36',
-    'Referer': 'https://pan.baidu.com',
-}
-
-# 默认保存路径
-FIXED_SAVE_PATH = "/我的资源/LinkChanger"
+QUARK_SAVE_PATH = "来自：分享/LinkChanger"
+BAIDU_SAVE_PATH = "/我的资源/LinkChanger"
 
 INVALID_CHARS_REGEX = re.compile(r'[^\u4e00-\u9fa5a-zA-Z0-9_\-\s]')
 
-# ==========================================
-# 第三部分：核心工具函数
-# ==========================================
+def get_timestamp_str():
+    return datetime.now().strftime("%H:%M:%S")
 
 def sanitize_filename(name: str) -> str:
     if not name: return ""
     name = re.sub(r'[【】\[\]()]', ' ', name)
     clean_name = INVALID_CHARS_REGEX.sub('', name)
-    clean_name = re.sub(r'\s+', ' ', clean_name).strip()
-    return clean_name
+    return re.sub(r'\s+', ' ', clean_name).strip()
 
-def extract_folder_name(full_text: str, match_start: int) -> str:
+def extract_smart_folder_name(full_text: str, match_start: int) -> str:
+    """智能提取资源名称 (通用版)"""
     lookback_limit = max(0, match_start - 200)
     pre_text = full_text[lookback_limit:match_start]
     lines = pre_text.splitlines()
@@ -55,8 +62,10 @@ def extract_folder_name(full_text: str, match_start: int) -> str:
     for line in reversed(lines):
         clean_line = line.strip()
         if not clean_line: continue
-        if re.match(r'^(百度|链接|提取码|:|：|https?|夸克)*$', clean_line, re.IGNORECASE):
+        # 过滤掉无意义的关键词行
+        if re.match(r'^(百度|链接|提取码|:|：|https?|夸克|pwd|code)*$', clean_line, re.IGNORECASE):
             continue
+        # 去掉行尾的关键词
         clean_line = re.sub(r'(百度|链接|提取码|:|：|pwd|夸克).*$', '', clean_line, flags=re.IGNORECASE).strip()
 
         if clean_line:
@@ -65,390 +74,394 @@ def extract_folder_name(full_text: str, match_start: int) -> str:
 
     final_name = sanitize_filename(candidate_name)
     if not final_name or len(final_name) < 2:
-        return None
+        return f"Res_{int(time.time())}" # 默认名
     return final_name[:50]
-
-def clean_quark_links(text: str) -> str:
-    return re.sub(r'^.*pan\.quark\.cn.*$[\r\n]*', '', text, flags=re.MULTILINE)
-
-def update_cookie(bdclnd: str, cookie: str) -> str:
-    cookies_dict = dict(map(lambda item: item.split('=', 1), filter(None, cookie.split(';'))))
-    cookies_dict['BDCLND'] = bdclnd
-    return ';'.join([f'{key}={value}' for key, value in cookies_dict.items()])
-
-def generate_code() -> str:
-    return ''.join(random.choice(string.ascii_letters + string.digits) for _ in range(4))
-
-def parse_response(content: str) -> Union[List[Any], int]:
-    try:
-        content_str = content.decode("utf-8")
-    except:
-        content_str = str(content)
-
-    shareid = re.search(r'"shareid":(\d+?),', content_str)
-    uk = re.search(r'"share_uk":"(\d+?)",', content_str)
-    fs_id = re.findall(r'"fs_id":(\d+?),', content_str)
-
-    if shareid and uk and fs_id:
-        return [shareid.group(1), uk.group(1), fs_id, [], []]
-    return -1
 
 def create_copy_button_html(text_to_copy: str):
     safe_text = json.dumps(text_to_copy)[1:-1]
-    html = f"""
-    <style>
-    .copy-btn {{
-        background-color: #ffffff;
-        color: #31333F;
-        padding: 0.5rem 1rem;
-        border-radius: 0.5rem;
-        border: 1px solid #d6d6d6;
-        font-family: sans-serif;
-        font-size: 1rem;
-        cursor: pointer;
-        width: 100%;
-        margin-top: 10px;
-        box-shadow: 0 1px 2px rgba(0,0,0,0.05);
-        transition: all 0.2s;
-    }}
-    .copy-btn:hover {{
-        border-color: #ff4b4b;
-        color: #ff4b4b;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-    }}
-    .copy-btn:active {{
-        background-color: #ff4b4b;
-        color: white;
-    }}
-    </style>
-    <script>
-    async function copyToClipboard() {{
-        const text = "{safe_text}";
-        try {{
-            await navigator.clipboard.writeText(text);
-            const btn = document.getElementById("copyBtn");
-            const originalText = btn.innerText;
-            btn.innerText = "✅ 已复制成功";
-            btn.style.borderColor = "#09ab3b";
-            btn.style.color = "#09ab3b";
-            setTimeout(() => {{
-                btn.innerText = originalText;
-                btn.style.borderColor = "#d6d6d6";
-                btn.style.color = "#31333F";
-            }}, 2000);
-        }} catch (err) {{
-            const textArea = document.createElement("textarea");
-            textArea.value = text;
-            document.body.appendChild(textArea);
-            textArea.select();
-            document.execCommand("copy");
-            document.body.removeChild(textArea);
-            alert("已复制！");
-        }}
-    }}
-    </script>
-    <button id="copyBtn" class="copy-btn" onclick="copyToClipboard()">📋 一键复制全部结果</button>
+    return f"""
+    <div style="margin-top: 10px;">
+        <button id="copyBtn" style="width:100%;padding:12px;cursor:pointer;background:#ffffff;border:1px solid #d6d6d6;border-radius:8px;font-weight:600;color:#31333F;transition:all 0.2s;" 
+        onclick="navigator.clipboard.writeText('{safe_text}').then(()=>{{let b=document.getElementById('copyBtn');b.innerText='✅ 已复制全部结果';b.style.color='#09ab3b';b.style.borderColor='#09ab3b';setTimeout(()=>{{b.innerText='📋 一键复制结果';b.style.color='#31333F';b.style.borderColor='#d6d6d6'}}, 2000)}})">
+        📋 一键复制结果
+        </button>
+    </div>
     """
-    return html
 
 # ==========================================
-# 第四部分：网络请求类
+# 第三部分：夸克引擎 (Async)
 # ==========================================
+class QuarkEngine:
+    def __init__(self, cookies: str):
+        self.headers = {
+            'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'cookie': cookies,
+            'origin': 'https://pan.quark.cn',
+            'referer': 'https://pan.quark.cn/',
+        }
+        self.client = httpx.AsyncClient(timeout=45.0, headers=self.headers, follow_redirects=True)
 
-class Network:
-    def __init__(self, cookie_str):
+    async def close(self):
+        await self.client.aclose()
+
+    def _params(self):
+        return {'pr': 'ucpro', 'fr': 'pc', '__dt': random.randint(100, 9999), '__t': int(time.time() * 1000)}
+
+    async def check_login(self):
+        try:
+            r = await self.client.get('https://pan.quark.cn/account/info', params=self._params())
+            data = r.json()
+            if (data.get('code') == 0 or data.get('code') == 'OK') and data.get('data'):
+                return data['data'].get('nickname', '用户')
+        except: pass
+        return None
+
+    async def get_folder_id(self, path: str):
+        parts = path.split('/')
+        curr_id = '0'
+        for part in parts:
+            if not part: continue
+            found = False
+            # 查找逻辑
+            params = self._params()
+            params.update({'pdir_fid': curr_id, '_page': 1, '_size': 50, '_fetch_total': 'false', '_sort': 'file_type:asc,updated_at:desc'})
+            try:
+                r = await self.client.get('https://drive-pc.quark.cn/1/clouddrive/file/sort', params=params)
+                for item in r.json().get('data', {}).get('list', []):
+                    if item['file_name'] == part and item['dir']:
+                        curr_id = item['fid']
+                        found = True
+                        break
+            except: pass
+            
+            if not found: return None # 路径不存在
+        return curr_id
+
+    async def process_url(self, url: str, target_fid: str):
+        # 1. 解析
+        try:
+            if '/s/' not in url: return None, "格式错误"
+            pwd_id = url.split('/s/')[-1].split('?')[0].split('#')[0]
+            match = re.search(r'[?&]pwd=([a-zA-Z0-9]+)', url)
+            passcode = match.group(1) if match else ""
+        except: return None, "解析异常"
+
+        # 2. Token
+        try:
+            r = await self.client.post("https://drive-pc.quark.cn/1/clouddrive/share/sharepage/token", 
+                                     json={"pwd_id": pwd_id, "passcode": passcode}, params=self._params())
+            stoken = r.json().get('data', {}).get('stoken')
+            if not stoken: return None, "提取码错误或失效"
+        except: return None, "Token请求失败"
+
+        # 3. 详情
+        params = self._params()
+        params.update({"pwd_id": pwd_id, "stoken": stoken, "pdir_fid": "0", "_page": 1, "_size": 50})
+        try:
+            r = await self.client.get("https://drive-pc.quark.cn/1/clouddrive/share/sharepage/detail", params=params)
+            items = r.json().get('data', {}).get('list', [])
+            if not items: return None, "空分享"
+            source_fids = [i['fid'] for i in items]
+            source_tokens = [i['share_fid_token'] for i in items]
+            first_name = items[0]['file_name']
+        except: return None, "获取详情失败"
+
+        # 4. 转存
+        save_data = {"fid_list": source_fids, "fid_token_list": source_tokens, "to_pdir_fid": target_fid, 
+                     "pwd_id": pwd_id, "stoken": stoken, "pdir_fid": "0", "scene": "link"}
+        try:
+            r = await self.client.post("https://drive.quark.cn/1/clouddrive/share/sharepage/save", json=save_data, params=self._params())
+            if r.json().get('code') not in [0, 'OK']: return None, f"转存失败: {r.json().get('message')}"
+            task_id = r.json().get('data', {}).get('task_id')
+        except: return None, "转存请求失败"
+
+        # 5. 等待
+        for _ in range(8):
+            await asyncio.sleep(1)
+            try:
+                params = self._params()
+                params['task_id'] = task_id
+                r = await self.client.get("https://drive-pc.quark.cn/1/clouddrive/task", params=params)
+                if r.json().get('data', {}).get('status') == 2: break
+            except: pass
+
+        # 6. 查找新文件
+        await asyncio.sleep(1.5)
+        new_fid = None
+        params = self._params()
+        params.update({'pdir_fid': target_fid, '_page': 1, '_size': 20, '_sort': 'updated_at:desc'})
+        try:
+            r = await self.client.get('https://drive-pc.quark.cn/1/clouddrive/file/sort', params=params)
+            for item in r.json().get('data', {}).get('list', []):
+                if item['file_name'] == first_name: 
+                    new_fid = item['fid']; break
+            if not new_fid and r.json().get('data', {}).get('list'):
+                new_fid = r.json()['data']['list'][0]['fid']
+        except: pass
+        
+        if not new_fid: return None, "未找到转存文件"
+
+        # 7. 分享
+        share_data = {"fid_list": [new_fid], "title": first_name, "url_type": 1, "expired_type": 1}
+        try:
+            r = await self.client.post("https://drive-pc.quark.cn/1/clouddrive/share", json=share_data, params=self._params())
+            share_task_id = r.json().get('data', {}).get('task_id')
+            
+            await asyncio.sleep(0.5)
+            params = self._params()
+            params.update({'task_id': share_task_id, 'retry_index': 0})
+            r = await self.client.get("https://drive-pc.quark.cn/1/clouddrive/task", params=params)
+            share_id = r.json().get('data', {}).get('share_id')
+            
+            r = await self.client.post("https://drive-pc.quark.cn/1/clouddrive/share/password", json={"share_id": share_id}, params=self._params())
+            return r.json()['data']['share_url'], "成功"
+        except: return None, "分享创建失败"
+
+# ==========================================
+# 第四部分：百度引擎 (Sync - Requests)
+# ==========================================
+class BaiduEngine:
+    def __init__(self, cookies: str):
         self.s = requests.Session()
-        self.s.trust_env = False
-        self.headers = HEADERS.copy()
-        self.headers['Cookie'] = "".join(cookie_str.split())
+        self.headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36',
+            'Referer': 'https://pan.baidu.com',
+            'Cookie': "".join(cookies.split())
+        }
         self.bdstoken = ''
         requests.packages.urllib3.disable_warnings()
 
-    @retry(stop_max_attempt_number=3, wait_fixed=2000)
-    def get_bdstoken(self) -> Union[str, int]:
-        url = f'{BASE_URL}/api/gettemplatevariable'
-        params = {'fields': '["bdstoken","token","uk","isdocuser"]'}
+    def update_cookie_bdclnd(self, bdclnd):
+        # 简单更新 Cookie 里的 BDCLND
+        current = dict(i.split('=', 1) for i in self.headers['Cookie'].split(';') if '=' in i)
+        current['BDCLND'] = bdclnd
+        self.headers['Cookie'] = ';'.join([f'{k}={v}' for k,v in current.items()])
+
+    @retry(stop_max_attempt_number=2)
+    def init_token(self):
+        url = 'https://pan.baidu.com/api/gettemplatevariable'
+        r = self.s.get(url, params={'fields': '["bdstoken","token","uk","isdocuser"]'}, headers=self.headers, verify=False)
+        if r.json().get('errno') == 0:
+            self.bdstoken = r.json()['result']['bdstoken']
+            return True
+        return False
+
+    def check_dir_exists(self, path):
+        if not path.startswith("/"): path = "/" + path
+        r = self.s.get('https://pan.baidu.com/api/list', params={'dir': path, 'bdstoken': self.bdstoken, 'start': 0, 'limit': 1}, headers=self.headers, verify=False)
+        return r.json().get('errno') == 0
+
+    def create_dir(self, path):
+        if not path.startswith("/"): path = "/" + path
+        self.s.post('https://pan.baidu.com/api/create', params={'a': 'commit', 'bdstoken': self.bdstoken}, 
+                    data={'path': path, 'isdir': 1, 'block_list': '[]'}, headers=self.headers, verify=False)
+
+    def process_url(self, url_info: dict, root_path: str):
+        url = url_info['url']
+        pwd = url_info['pwd']
+        clean_url = url.split('?')[0]
+        folder_name = url_info['name']
+
+        # 1. 验证密码
+        if pwd:
+            surl = re.search(r'(?:surl=|/s/1|/s/)([\w\-]+)', clean_url)
+            if not surl: return None, "URL格式错误"
+            r = self.s.post('https://pan.baidu.com/share/verify', 
+                            params={'surl': surl.group(1), 't': int(time.time()*1000), 'bdstoken': self.bdstoken, 'channel': 'chunlei', 'web': 1, 'clienttype': 0},
+                            data={'pwd': pwd, 'vcode': '', 'vcode_str': ''}, headers=self.headers, verify=False)
+            if r.json()['errno'] == 0:
+                self.update_cookie_bdclnd(r.json()['randsk'])
+            else:
+                return None, "提取码错误"
+
+        # 2. 解析文件
+        content = self.s.get(clean_url, headers=self.headers, verify=False).text
         try:
-            r = self.s.get(url, params=params, headers=self.headers, verify=False)
-            if 'errno' in r.json() and r.json()['errno'] != 0:
-                return r.json()['errno']
-            return r.json()['result']['bdstoken']
-        except:
-            return -1
+            shareid = re.search(r'"shareid":(\d+?),', content).group(1)
+            uk = re.search(r'"share_uk":"(\d+?)",', content).group(1)
+            fs_id_list = re.findall(r'"fs_id":(\d+?),', content)
+            if not fs_id_list: return None, "无文件"
+        except: return None, "页面解析失败"
 
-    @retry(stop_max_attempt_number=3)
-    def verify_pass_code(self, link: str, code: str) -> Union[str, int]:
-        url = f'{BASE_URL}/share/verify'
-        surl = re.search(r'(?:surl=|/s/1|/s/)([\w\-]+)', link)
-        if not surl: return -9
+        # 3. 准备目录
+        safe_suffix = ''.join(random.choices(string.ascii_letters + string.digits, k=4))
+        final_folder = f"{folder_name}_{safe_suffix}"
+        save_path = f"{root_path}/{final_folder}"
+        
+        self.create_dir(save_path) # 尝试创建
 
-        params = {
-            'surl': surl.group(1),
-            't': str(int(time.time() * 1000)),
-            'bdstoken': self.bdstoken,
-            'channel': 'chunlei', 'web': '1', 'clienttype': '0'
-        }
-        data = {'pwd': code, 'vcode': '', 'vcode_str': ''}
-        r = self.s.post(url, params=params, data=data, headers=self.headers, verify=False)
+        # 4. 转存
+        r = self.s.post('https://pan.baidu.com/share/transfer', 
+                        params={'shareid': shareid, 'from': uk, 'bdstoken': self.bdstoken},
+                        data={'fsidlist': f"[{','.join(fs_id_list)}]", 'path': save_path}, headers=self.headers, verify=False)
+        if r.json()['errno'] != 0: return None, f"转存失败({r.json()['errno']})"
+
+        # 5. 获取目录ID并分享
+        r = self.s.get('https://pan.baidu.com/api/list', params={'dir': root_path, 'bdstoken': self.bdstoken}, headers=self.headers, verify=False)
+        target_fsid = None
+        for item in r.json().get('list', []):
+            if item['server_filename'] == final_folder:
+                target_fsid = item['fs_id']; break
+        
+        if not target_fsid: return None, "获取新目录失败"
+
+        new_pwd = ''.join(random.choices(string.ascii_letters + string.digits, k=4))
+        r = self.s.post('https://pan.baidu.com/share/set', 
+                        params={'bdstoken': self.bdstoken, 'channel': 'chunlei', 'clienttype': 0, 'web': 1},
+                        data={'period': 0, 'pwd': new_pwd, 'fid_list': f'[{target_fsid}]', 'schannel': 4}, headers=self.headers, verify=False)
+        
         if r.json()['errno'] == 0:
-            return r.json()['randsk']
-        return r.json()['errno']
-
-    def get_transfer_params(self, url: str) -> bytes:
-        return self.s.get(url, headers=self.headers, verify=False).content
-
-    # === 新增：检查目录是否存在 ===
-    @retry(stop_max_attempt_number=3)
-    def check_dir_exists(self, path: str) -> bool:
-        """
-        检查目录是否存在，避免重复创建导致生成副本
-        """
-        if not path.startswith("/"): path = "/" + path
-        url = f'{BASE_URL}/api/list'
-        # 尝试列出该目录下的文件，如果目录存在，errno应为0
-        params = {'dir': path, 'bdstoken': self.bdstoken, 'start': 0, 'limit': 1}
-        try:
-            r = self.s.get(url, params=params, headers=self.headers, verify=False)
-            data = r.json()
-            if data.get('errno') == 0:
-                return True # 目录存在
-            return False
-        except:
-            return False
-
-    @retry(stop_max_attempt_number=3)
-    def create_dir(self, path: str) -> int:
-        url = f'{BASE_URL}/api/create'
-        if not path.startswith("/"): path = "/" + path
-        data = {'path': path, 'isdir': '1', 'block_list': '[]'}
-        params = {'a': 'commit', 'bdstoken': self.bdstoken}
-        r = self.s.post(url, params=params, data=data, headers=self.headers, verify=False)
-        return r.json()['errno']
-
-    @retry(stop_max_attempt_number=5)
-    def transfer_file(self, params_list: list, path: str) -> int:
-        url = f'{BASE_URL}/share/transfer'
-        if not path.startswith("/"): path = "/" + path
-        data = {'fsidlist': f"[{','.join(params_list[2])}]", 'path': path}
-        params = {'shareid': params_list[0], 'from': params_list[1], 'bdstoken': self.bdstoken}
-        r = self.s.post(url, params=params, data=data, headers=self.headers, verify=False)
-        return r.json()['errno']
-
-    @retry(stop_max_attempt_number=3)
-    def delete_file(self, path: str) -> int:
-        url = f'{BASE_URL}/api/filemanager'
-        if not path.startswith("/"): path = "/" + path
-        data = {'filelist': f'["{path}"]'}
-        params = {'oper': 'delete', 'bdstoken': self.bdstoken}
-        try:
-            r = self.s.post(url, params=params, data=data, headers=self.headers, verify=False)
-            if 'errno' in r.json():
-                return r.json()['errno']
-            return -1
-        except:
-            return -1
-
-    @retry(stop_max_attempt_number=3)
-    def create_share(self, fs_id: str, pwd: str) -> Union[str, int]:
-        url = f'{BASE_URL}/share/set'
-        data = {'period': '0', 'pwd': pwd, 'fid_list': f'[{fs_id}]', 'schannel': '4'}
-        params = {'bdstoken': self.bdstoken, 'channel': 'chunlei', 'clienttype': '0', 'web': '1'}
-        r = self.s.post(url, params=params, data=data, headers=self.headers, verify=False)
-        if r.json()['errno'] == 0:
-            return r.json()['link']
-        return r.json()['errno']
-
-    def get_dir_fsid(self, parent_path: str, target_name: str) -> str:
-        url = f'{BASE_URL}/api/list'
-        if not parent_path.startswith("/"): parent_path = "/" + parent_path
-        params = {'dir': parent_path, 'bdstoken': self.bdstoken, 'order': 'time', 'desc': '1'}
-        r = self.s.get(url, params=params, headers=self.headers, verify=False)
-        if r.json()['errno'] == 0:
-            for item in r.json()['list']:
-                if item['server_filename'] == target_name:
-                    return item['fs_id']
-        return None
+            return f"{r.json()['link']}?pwd={new_pwd}", "成功"
+        return None, "分享创建失败"
 
 # ==========================================
-# 第五部分：Streamlit 业务流程
+# 第五部分：主逻辑与界面
 # ==========================================
 
-def process_single_link(network, match, full_text, root_path, log_container):
-    url = match.group(1)
-    pwd_match = re.search(r'(?:\?pwd=|&pwd=|\s+|提取码[:：]?\s*)([a-zA-Z0-9]{4})', match.group(0))
-    pwd = pwd_match.group(1) if pwd_match else ""
-    clean_url = url.split('?')[0]
-
-    folder_name = extract_folder_name(full_text, match.start())
-    if not folder_name:
-        folder_name = f"Resource_{int(time.time())}"
-        log_container.warning(f"⚠️ 使用默认名: **{folder_name}**")
-    else:
-        log_container.info(f"📂 识别: **{folder_name}**")
-
-    if pwd:
-        res = network.verify_pass_code(clean_url, pwd)
-        if isinstance(res, int):
-            log_container.error(f"❌ 密码验证失败 ({clean_url})")
-            return None
-        network.headers['Cookie'] = update_cookie(res, network.headers['Cookie'])
-
-    content = network.get_transfer_params(clean_url)
-    params = parse_response(content)
-    if params == -1:
-        log_container.error(f"❌ 链接解析失败")
-        return None
-
-    safe_suffix = generate_code()
-    final_folder_name = f"{folder_name}_{safe_suffix}"
-    full_save_path = f"{root_path}/{final_folder_name}"
-
-    # 1. 创建子目录 (对于具体的资源子目录，仍然尝试创建)
-    create_res = network.create_dir(full_save_path)
-    if create_res != 0 and create_res != -8:
-        # 重试策略
-        final_folder_name = f"Transfer_{int(time.time())}_{safe_suffix}"
-        full_save_path = f"{root_path}/{final_folder_name}"
-        if network.create_dir(full_save_path) != 0:
-            log_container.error("❌ 目录创建失败")
-            return None
-
-    # 2. 转存
-    transfer_res = network.transfer_file(params, full_save_path)
-    if transfer_res != 0:
-        log_container.error(f"❌ 转存失败 (Code: {transfer_res})，清理空目录...")
-        network.delete_file(full_save_path)
-        return None
-
-    # 3. 获取ID并分享
-    fs_id = network.get_dir_fsid(root_path, final_folder_name)
-    if not fs_id:
-        log_container.error("❌ 获取文件ID失败")
-        return None
-
-    new_pwd = generate_code()
-    share_link = network.create_share(fs_id, new_pwd)
-
-    if isinstance(share_link, int):
-        log_container.error(f"❌ 创建分享失败")
-        return None
-
-    log_container.success(f"✅ 成功")
-    return f"{share_link}?pwd={new_pwd}"
-
-def clear_text():
-    st.session_state["user_input"] = ""
+def get_secret(key):
+    # 尝试从 secrets 获取，支持 section 格式或直接 key 格式
+    try:
+        if "quark" in st.secrets and key == "quark_cookie": return st.secrets["quark"]["cookie"]
+        if "baidu" in st.secrets and key == "baidu_cookie": return st.secrets["baidu"]["cookie"]
+        return st.secrets.get(key.upper(), "")
+    except: return ""
 
 def main():
-    # --- 侧边栏配置区 ---
-    with st.sidebar:
-        st.header("⚙️ 配置面板")
-        
-        default_cookie = ""
-        if "baidu" in st.secrets and "cookie" in st.secrets["baidu"]:
-            default_cookie = st.secrets["baidu"]["cookie"]
-        elif "BD_COOKIE" in st.secrets:
-            default_cookie = st.secrets["BD_COOKIE"]
-        elif "cookie" in st.secrets:
-            default_cookie = st.secrets["cookie"]
-            
-        user_cookie = st.text_input(
-            "百度 Cookie (BDUSS等)",
-            value=default_cookie,
-            help="优先读取 Secrets 配置，也可在此处临时修改。"
-        )
-
-    # --- 主界面 ---
-    st.title("🔗 LinkChanger Pro")
+    st.title("⚡ 网盘转存助手 Ultimate")
     
-    input_text = st.text_area(
-        "📝 输入资源文本",
-        height=180,
-        placeholder="在此粘贴包含链接的文本（支持混合文本，自动提取链接和提取码）...",
-        key="user_input"
-    )
-
-    col_act1, col_act2 = st.columns([1, 5])
-    with col_act1:
-        start_process = st.button("🚀 开始处理", type="primary", use_container_width=True)
-    with col_act2:
-        st.button("🗑️ 清空", on_click=clear_text)
-
-    if start_process:
-        if not input_text:
-            st.warning("请先输入文本")
-            st.stop()
+    # --- 侧边栏设置 ---
+    with st.sidebar:
+        st.header("⚙️ 账号配置")
+        
+        tab_q, tab_b = st.tabs(["☁️ 夸克设置", "🐻 百度设置"])
+        
+        with tab_q:
+            q_cookie_default = get_secret("quark_cookie")
+            quark_cookie = st.text_area("夸克 Cookie", value=q_cookie_default, height=100, key="q_c", placeholder="b-user-id=...")
+            st.caption(f"📂 存至: `{QUARK_SAVE_PATH}`")
             
-        if not user_cookie:
-            st.error("❌ 缺少 Cookie，无法进行操作。")
-            st.stop()
+        with tab_b:
+            b_cookie_default = get_secret("baidu_cookie")
+            baidu_cookie = st.text_area("百度 Cookie", value=b_cookie_default, height=100, key="b_c", placeholder="BDUSS=...")
+            st.caption(f"📂 存至: `{BAIDU_SAVE_PATH}`")
 
-        processed_text = clean_quark_links(input_text)
+    # --- 主输入区 ---
+    st.info("💡 提示：支持混合输入夸克和百度链接，程序会自动识别并分类处理。")
+    input_text = st.text_area("📝 请在此处粘贴链接文本...", height=200)
+
+    # --- 执行逻辑 ---
+    col1, col2 = st.columns([1, 4])
+    
+    if col1.button("🚀 开始转存", type="primary", use_container_width=True):
+        if not input_text.strip():
+            st.toast("请输入内容", icon="⚠️"); return
+
+        # 1. 链接识别与提取
+        quark_regex = re.compile(r'(https://pan\.quark\.cn/s/[a-zA-Z0-9]+(?:\?pwd=[a-zA-Z0-9]+)?)')
+        baidu_regex = re.compile(r'(https?://pan\.baidu\.com/s/[a-zA-Z0-9_\-]+(?:\?pwd=[a-zA-Z0-9]+)?)')
         
-        network = Network(user_cookie)
-
-        token = network.get_bdstoken()
-        if isinstance(token, int):
-            st.error(f"❌ Cookie 无效或已过期 (Error: {token})")
-            st.sidebar.error("Cookie 失效，请更新")
-            st.stop()
-        network.bdstoken = token
-
-        link_regex = re.compile(r'(https?://pan\.baidu\.com/s/[a-zA-Z0-9_\-]+(?:\?pwd=[a-zA-Z0-9]+)?)')
-        matches = list(link_regex.finditer(processed_text))
-
-        if not matches:
-            st.info("⚠️ 文本中未找到百度网盘链接")
-            st.stop()
-
-        progress_bar = st.progress(0)
-        status_text = st.empty()
-        final_text = processed_text
-        success_count = 0
-        total_links = len(matches)
-
-        # === 关键修正 ===
-        # 1. 先检查根目录是否存在
-        # 2. 只有当它 *不存在* 时，才调用 create_dir
-        # 3. 这样就避免了百度服务器因为“重复创建”而生成带时间戳的副本
-        status_text.text("正在检查根目录状态...")
-        if not network.check_dir_exists(FIXED_SAVE_PATH):
-            status_text.text(f"正在创建根目录: {FIXED_SAVE_PATH}")
-            network.create_dir(FIXED_SAVE_PATH)
-        else:
-            # 目录已存在，什么都不做，直接开始处理文件
-            pass
-
-        with st.expander("📜 处理日志详情 (点击展开)", expanded=True):
-            for i, match in enumerate(reversed(matches)):
-                status_text.text(f"正在处理链接 {i+1}/{total_links}...")
-                progress_bar.progress((i + 1) / total_links)
-                
-                log_col1, log_col2 = st.columns([3, 1])
-                with log_col1:
-                    new_link = process_single_link(network, match, processed_text, FIXED_SAVE_PATH, st)
-                
-                if new_link:
-                    start, end = match.span()
-                    final_text = final_text[:start] + new_link + final_text[end:]
-                    success_count += 1
-
-        progress_bar.empty()
-        status_text.empty()
-
-        st.divider()
+        q_matches = list(quark_regex.finditer(input_text))
+        b_matches = list(baidu_regex.finditer(input_text))
         
-        m1, m2, m3 = st.columns(3)
-        m1.metric("总链接数", total_links)
-        m2.metric("成功转存", success_count, delta_color="normal")
-        m3.metric("失败/跳过", total_links - success_count, delta_color="inverse")
+        total_tasks = len(q_matches) + len(b_matches)
+        if total_tasks == 0:
+            st.warning("❌ 未识别到有效链接"); return
 
-        if success_count > 0:
-            st.success("🎉 处理完成！")
-            st.text_area("✨ 最终结果 (可直接编辑)", value=final_text, height=250)
-            components.html(create_copy_button_html(final_text), height=60)
-        else:
-            st.error("⚠️ 处理完成，但没有生成新的链接。")
+        # 2. 初始化引擎
+        q_engine = QuarkEngine(quark_cookie) if q_matches else None
+        b_engine = BaiduEngine(baidu_cookie) if b_matches else None
 
-if __name__ == '__main__':
+        # 3. 异步处理流程
+        async def run_process():
+            final_text = input_text
+            success_count = 0
+            
+            with st.status(f"正在处理 {total_tasks} 个任务...", expanded=True) as status:
+                
+                # --- 处理夸克 ---
+                if q_matches:
+                    if not quark_cookie:
+                        st.error("检测到夸克链接但未配置 Cookie，跳过。")
+                    else:
+                        st.write("--- ☁️ **开始处理夸克链接** ---")
+                        # 检查登录
+                        user = await q_engine.check_login()
+                        if not user:
+                            st.error("夸克登录失败：Cookie 无效或 IP 限制")
+                        else:
+                            st.write(f"✅ 夸克登录成功: {user}")
+                            # 检查目录
+                            target_fid = await q_engine.get_folder_id(QUARK_SAVE_PATH)
+                            if not target_fid:
+                                st.error(f"❌ 夸克目录不存在: {QUARK_SAVE_PATH}")
+                            else:
+                                for match in q_matches:
+                                    raw_url = match.group(1)
+                                    st.write(f"🔄 处理: {raw_url}")
+                                    new_url, msg = await q_engine.process_url(raw_url, target_fid)
+                                    
+                                    if new_url:
+                                        final_text = final_text.replace(raw_url, new_url) # 简单替换
+                                        st.markdown(f"<span class='quark-tag'>夸克</span> ✅ 成功", unsafe_allow_html=True)
+                                        success_count += 1
+                                    else:
+                                        st.markdown(f"<span class='quark-tag'>夸克</span> ❌ 失败: {msg}", unsafe_allow_html=True)
+
+                # --- 处理百度 ---
+                if b_matches:
+                    if not baidu_cookie:
+                        st.error("检测到百度链接但未配置 Cookie，跳过。")
+                    else:
+                        st.write("--- 🐻 **开始处理百度链接** ---")
+                        # 检查登录
+                        if not b_engine.init_token():
+                            st.error("百度登录失败：Cookie 无效")
+                        else:
+                            st.write("✅ 百度 Token 获取成功")
+                            # 检查目录
+                            if not b_engine.check_dir_exists(BAIDU_SAVE_PATH):
+                                st.write(f"📁 创建百度目录: {BAIDU_SAVE_PATH}")
+                                b_engine.create_dir(BAIDU_SAVE_PATH)
+                            
+                            for match in b_matches:
+                                raw_url = match.group(1)
+                                full_match_str = match.group(0)
+                                
+                                # 提取密码和文件名
+                                pwd_match = re.search(r'(?:\?pwd=|&pwd=|\s+|提取码[:：]?\s*)([a-zA-Z0-9]{4})', full_match_str)
+                                pwd = pwd_match.group(1) if pwd_match else ""
+                                name = extract_smart_folder_name(input_text, match.start())
+                                
+                                st.write(f"🔄 处理: {name} | {raw_url}")
+                                
+                                # 百度必须同步调用，但在 Async 函数中运行没问题
+                                new_url, msg = b_engine.process_url({'url': raw_url, 'pwd': pwd, 'name': name}, BAIDU_SAVE_PATH)
+                                
+                                if new_url:
+                                    # 百度链接替换稍微复杂点，因为提取码可能散落在周围，这里做简单替换，用户最好手动检查
+                                    final_text = final_text.replace(raw_url, new_url)
+                                    st.markdown(f"<span class='baidu-tag'>百度</span> ✅ 成功", unsafe_allow_html=True)
+                                    success_count += 1
+                                else:
+                                    st.markdown(f"<span class='baidu-tag'>百度</span> ❌ 失败: {msg}", unsafe_allow_html=True)
+
+                if q_engine: await q_engine.close()
+                
+                status.update(label="处理完成", state="complete", expanded=False)
+            
+            # --- 结果展示 ---
+            if success_count > 0:
+                st.balloons()
+                st.success(f"✨ 成功转存 {success_count}/{total_tasks} 个链接")
+                st.text_area("⬇️ 最终结果", value=final_text, height=250)
+                components.html(create_copy_button_html(final_text), height=80)
+            else:
+                st.warning("没有链接被成功处理。")
+
+        asyncio.run(run_process())
+
+    if col2.button("🗑️ 清空内容", use_container_width=True):
+        st.rerun()
+
+if __name__ == "__main__":
     main()
