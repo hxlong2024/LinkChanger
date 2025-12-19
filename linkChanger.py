@@ -322,32 +322,36 @@ def clear_text():
     st.session_state["user_input"] = ""
 
 def main():
-    # --- 侧边栏配置区 ---
+        # --- 侧边栏配置区 ---
     with st.sidebar:
         st.header("⚙️ 配置面板")
         
-        # 1. 尝试从 Secrets 读取默认值
+        # 1. 智能读取 Secrets (支持多种格式)
         default_cookie = ""
-        # 兼容性处理：防止没有配置 secrets 时报错
+        
+        # 尝试方式 A: [baidu] cookie = "..."
         if "baidu" in st.secrets and "cookie" in st.secrets["baidu"]:
             default_cookie = st.secrets["baidu"]["cookie"]
         
-        # 2. 显示输入框，允许用户修改
-        # 如果 Secrets 有值，这里会自动填入；如果用户想改，可以直接在这里改
+        # 尝试方式 B: BD_COOKIE = "..." (你可能用的这种)
+        elif "BD_COOKIE" in st.secrets:
+            default_cookie = st.secrets["BD_COOKIE"]
+            
+        # 尝试方式 C: cookie = "..." (直接放在根目录)
+        elif "cookie" in st.secrets:
+            default_cookie = st.secrets["cookie"]
+            
+        # 调试信息 (如果还是空的，会在侧边栏显示当前读取到了什么Key，方便排查)
+        # if not default_cookie:
+        #     st.caption(f"调试: 检测到的Secrets Keys: {list(st.secrets.keys())}")
+        
+        # 2. 显示输入框
         user_cookie = st.text_input(
             "百度 Cookie (BDUSS等)",
             value=default_cookie,
-            type="password", # 密码模式隐藏字符，如果想看可以改为 "default"
-            help="默认读取 Secrets 配置，也可在此处临时修改。"
+            type="password", 
+            help="优先读取 Secrets 配置，也可在此处临时修改。"
         )
-        
-        if not user_cookie:
-            st.warning("⚠️ 请输入 Cookie 或在 App Settings 配置 Secrets")
-
-        st.divider()
-        st.write("📂 **当前保存路径:**")
-        st.code(FIXED_SAVE_PATH, language="text")
-        st.caption("所有转存资源将存放在网盘此目录下")
 
     # --- 主界面 ---
     st.title("🔗 LinkChanger Pro")
