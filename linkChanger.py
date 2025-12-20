@@ -42,7 +42,7 @@ QUARK_SAVE_PATH = "来自：分享/LinkChanger"
 BAIDU_SAVE_PATH = "/我的资源/LinkChanger"
 
 # ==========================================
-# 1. 页面配置与初始化
+# 1. 页面配置与样式
 # ==========================================
 st.set_page_config(
     page_title="网盘转存助手",
@@ -60,20 +60,19 @@ st.markdown("""
     .baidu-tag { background-color: #ff4d4f; color: white; padding: 2px 6px; border-radius: 4px; font-size: 0.8em; margin-right: 5px; }
     .inject-tag { background-color: #ff9900; color: white; padding: 2px 6px; border-radius: 4px; font-size: 0.8em; margin-right: 5px; }
     .time-tag { color: #888; font-size: 0.85em; margin-left: 8px; font-family: monospace; }
-    /* 结果区域样式 */
     .result-box { border: 2px solid #e6f4ea; padding: 15px; border-radius: 10px; background-color: #f9fdfa; margin-top: 20px; }
     </style>
 """, unsafe_allow_html=True)
 
-# === 📱 核心修改：初始化会话状态 (防止刷新丢失) ===
+# 初始化状态
 if 'process_logs' not in st.session_state:
-    st.session_state.process_logs = []  # 存储处理日志
+    st.session_state.process_logs = []
 if 'final_result_cache' not in st.session_state:
-    st.session_state.final_result_cache = "" # 存储最终结果文本
+    st.session_state.final_result_cache = ""
 if 'process_status' not in st.session_state:
-    st.session_state.process_status = None # None, 'running', 'done'
+    st.session_state.process_status = None
 if 'task_summary' not in st.session_state:
-    st.session_state.task_summary = {} # 存储统计信息
+    st.session_state.task_summary = {}
 
 INVALID_CHARS_REGEX = re.compile(r'[^\u4e00-\u9fa5a-zA-Z0-9_\-\s]')
 
@@ -172,6 +171,7 @@ class QuarkEngine:
             passcode = match.group(1) if match else ""
         except: return None, "解析异常", None
 
+        # 1. Token
         try:
             r = await self.client.post("https://drive-pc.quark.cn/1/clouddrive/share/sharepage/token", 
                                      json={"pwd_id": pwd_id, "passcode": passcode}, params=self._params())
@@ -179,6 +179,7 @@ class QuarkEngine:
             if not stoken: return None, "提取码失效", None
         except: return None, "Token请求失败", None
 
+        # 2. Detail
         params = self._params()
         params.update({"pwd_id": pwd_id, "stoken": stoken, "pdir_fid": "0", "_page": 1, "_size": 50})
         try:
@@ -190,6 +191,7 @@ class QuarkEngine:
             first_name = items[0]['file_name']
         except: return None, "获取详情失败", None
 
+        # 3. Transfer
         save_data = {"fid_list": source_fids, "fid_token_list": source_tokens, "to_pdir_fid": target_fid, 
                      "pwd_id": pwd_id, "stoken": stoken, "pdir_fid": "0", "scene": "link"}
         try:
@@ -200,6 +202,7 @@ class QuarkEngine:
 
         if is_inject: return "INJECT_OK", "植入成功", None
 
+        # 4. Wait
         for _ in range(8):
             await asyncio.sleep(1)
             try:
@@ -209,6 +212,7 @@ class QuarkEngine:
                 if r.json().get('data', {}).get('status') == 2: break
             except: pass
 
+        # 5. Find New
         await asyncio.sleep(1.5)
         new_fid = None
         params = self._params()
@@ -224,6 +228,7 @@ class QuarkEngine:
         
         if not new_fid: return None, "✅ 已存入网盘 (但无法获取文件ID，未分享)", None
 
+        # 6. Share
         share_data = {"fid_list": [new_fid], "title": first_name, "url_type": 1, "expired_type": 1}
         try:
             r = await self.client.post("https://drive-pc.quark.cn/1/clouddrive/share", json=share_data, params=self._params())
@@ -243,7 +248,7 @@ class QuarkEngine:
         except: return None, "✅ 已存入网盘 (但分享创建异常)", None
 
 # ==========================================
-# 3. 百度引擎 (Sync)
+# 3. 百度引擎 (Sync - 增强稳定性版)
 # ==========================================
 class BaiduEngine:
     def __init__(self, cookies: str):
@@ -272,13 +277,17 @@ class BaiduEngine:
 
     def check_dir_exists(self, path):
         if not path.startswith("/"): path = "/" + path
-        r = self.s.get('https://pan.baidu.com/api/list', params={'dir': path, 'bdstoken': self.bdstoken, 'start': 0, 'limit': 1}, headers=self.headers, verify=False)
-        return r.json().get('errno') == 0
+        try:
+            r = self.s.get('https://pan.baidu.com/api/list', params={'dir': path, 'bdstoken': self.bdstoken, 'start': 0, 'limit': 1}, headers=self.headers, verify=False)
+            return r.json().get('errno') == 0
+        except: return False
 
     def create_dir(self, path):
         if not path.startswith("/"): path = "/" + path
-        self.s.post('https://pan.baidu.com/api/create', params={'a': 'commit', 'bdstoken': self.bdstoken}, 
-                    data={'path': path, 'isdir': 1, 'block_list': '[]'}, headers=self.headers, verify=False)
+        try:
+            self.s.post('https://pan.baidu.com/api/create', params={'a': 'commit', 'bdstoken': self.bdstoken}, 
+                        data={'path': path, 'isdir': 1, 'block_list': '[]'}, headers=self.headers, verify=False)
+        except: pass
 
     def process_url(self, url_info: dict, root_path: str, is_inject: bool = False):
         url = url_info['url']
@@ -286,64 +295,85 @@ class BaiduEngine:
         clean_url = url.split('?')[0]
         folder_name = url_info.get('name', 'Temp')
 
-        if pwd:
-            surl = re.search(r'(?:surl=|/s/1|/s/)([\w\-]+)', clean_url)
-            if not surl: return None, "URL格式错误", None
-            r = self.s.post('https://pan.baidu.com/share/verify', 
-                            params={'surl': surl.group(1), 't': int(time.time()*1000), 'bdstoken': self.bdstoken, 'channel': 'chunlei', 'web': 1, 'clienttype': 0},
-                            data={'pwd': pwd, 'vcode': '', 'vcode_str': ''}, headers=self.headers, verify=False)
-            if r.json()['errno'] == 0:
-                self.update_cookie_bdclnd(r.json()['randsk'])
-            else:
-                return None, "提取码错误", None
-
-        content = self.s.get(clean_url, headers=self.headers, verify=False).text
         try:
-            shareid = re.search(r'"shareid":(\d+?),', content).group(1)
-            uk = re.search(r'"share_uk":"(\d+?)",', content).group(1)
-            fs_id_list = re.findall(r'"fs_id":(\d+?),', content)
-            if not fs_id_list: return None, "无文件", None
-        except: return None, "页面解析失败", None
+            # 1. Verify
+            if pwd:
+                surl = re.search(r'(?:surl=|/s/1|/s/)([\w\-]+)', clean_url)
+                if not surl: return None, "URL格式错误", None
+                r = self.s.post('https://pan.baidu.com/share/verify', 
+                                params={'surl': surl.group(1), 't': int(time.time()*1000), 'bdstoken': self.bdstoken, 'channel': 'chunlei', 'web': 1, 'clienttype': 0},
+                                data={'pwd': pwd, 'vcode': '', 'vcode_str': ''}, headers=self.headers, verify=False)
+                if r.json()['errno'] == 0:
+                    self.update_cookie_bdclnd(r.json()['randsk'])
+                else:
+                    return None, "提取码错误", None
 
-        if is_inject:
-            save_path = root_path
-        else:
-            safe_suffix = ''.join(random.choices(string.ascii_letters + string.digits, k=4))
-            final_folder = f"{folder_name}_{safe_suffix}"
-            save_path = f"{root_path}/{final_folder}"
-            self.create_dir(save_path) 
+            # 2. Get FSID
+            content = self.s.get(clean_url, headers=self.headers, verify=False).text
+            try:
+                shareid = re.search(r'"shareid":(\d+?),', content).group(1)
+                uk = re.search(r'"share_uk":"(\d+?)",', content).group(1)
+                fs_id_list = re.findall(r'"fs_id":(\d+?),', content)
+                if not fs_id_list: return None, "无文件", None
+            except: return None, "页面解析失败", None
 
-        r = self.s.post('https://pan.baidu.com/share/transfer', 
-                        params={'shareid': shareid, 'from': uk, 'bdstoken': self.bdstoken},
-                        data={'fsidlist': f"[{','.join(fs_id_list)}]", 'path': save_path}, headers=self.headers, verify=False)
-        
-        if r.json()['errno'] == 12: 
-             if is_inject: return "INJECT_OK", "文件已存在", save_path
-             return None, "转存失败(文件已存在)", None
-        
-        if r.json()['errno'] != 0: return None, f"转存失败({r.json()['errno']})", None
+            # 3. Path
+            if is_inject:
+                save_path = root_path
+            else:
+                safe_suffix = ''.join(random.choices(string.ascii_letters + string.digits, k=4))
+                final_folder = f"{folder_name}_{safe_suffix}"
+                save_path = f"{root_path}/{final_folder}"
+                self.create_dir(save_path) 
 
-        if is_inject: return "INJECT_OK", "成功", save_path
+            # 4. Transfer (增加超时控制，防止大文件卡死)
+            # 百度非会员转存超限文件会报错 errno: 12 或 -10
+            try:
+                r = self.s.post('https://pan.baidu.com/share/transfer', 
+                                params={'shareid': shareid, 'from': uk, 'bdstoken': self.bdstoken},
+                                data={'fsidlist': f"[{','.join(fs_id_list)}]", 'path': save_path}, 
+                                headers=self.headers, verify=False, timeout=20) # 20秒超时
+                res = r.json()
+            except requests.exceptions.RequestException:
+                return None, "转存请求超时(文件可能过大)", None
 
-        r = self.s.get('https://pan.baidu.com/api/list', params={'dir': root_path, 'bdstoken': self.bdstoken}, headers=self.headers, verify=False)
-        target_fsid = None
-        for item in r.json().get('list', []):
-            if item['server_filename'] == final_folder:
-                target_fsid = item['fs_id']; break
-        
-        if not target_fsid: return None, "✅ 已存入网盘 (获取目录失败)", None
+            if res.get('errno') == 12: # 文件已存在
+                 if is_inject: return "INJECT_OK", "文件已存在", save_path
+                 return None, "转存失败(文件已存在)", None
+            
+            # 处理常见非会员错误
+            if res.get('errno') != 0: 
+                errno = res.get('errno')
+                err_msg = f"转存失败({errno})"
+                if errno == -10: err_msg = "容量不足或文件数超限"
+                if errno == -33: err_msg = "文件数超出限制(非会员500)"
+                return None, err_msg, None
 
-        new_pwd = ''.join(random.choices(string.ascii_letters + string.digits, k=4))
-        r = self.s.post('https://pan.baidu.com/share/set', 
-                        params={'bdstoken': self.bdstoken, 'channel': 'chunlei', 'clienttype': 0, 'web': 1},
-                        data={'period': 0, 'pwd': new_pwd, 'fid_list': f'[{target_fsid}]', 'schannel': 4}, headers=self.headers, verify=False)
-        
-        if r.json()['errno'] == 0:
-            return f"{r.json()['link']}?pwd={new_pwd}", "成功", save_path 
-        return None, "✅ 已存入网盘 (分享失败)", None
+            if is_inject: return "INJECT_OK", "成功", save_path
+
+            # 5. Share
+            r = self.s.get('https://pan.baidu.com/api/list', params={'dir': root_path, 'bdstoken': self.bdstoken}, headers=self.headers, verify=False)
+            target_fsid = None
+            for item in r.json().get('list', []):
+                if item['server_filename'] == final_folder:
+                    target_fsid = item['fs_id']; break
+            
+            if not target_fsid: return None, "✅ 已存入网盘 (获取目录失败)", None
+
+            new_pwd = ''.join(random.choices(string.ascii_letters + string.digits, k=4))
+            r = self.s.post('https://pan.baidu.com/share/set', 
+                            params={'bdstoken': self.bdstoken, 'channel': 'chunlei', 'clienttype': 0, 'web': 1},
+                            data={'period': 0, 'pwd': new_pwd, 'fid_list': f'[{target_fsid}]', 'schannel': 4}, headers=self.headers, verify=False)
+            
+            if r.json()['errno'] == 0:
+                return f"{r.json()['link']}?pwd={new_pwd}", "成功", save_path 
+            return None, "✅ 已存入网盘 (分享失败)", None
+
+        except Exception as e:
+            return None, f"发生异常: {str(e)[:20]}...", None
 
 # ==========================================
-# 4. 主逻辑 (移动端优化版)
+# 4. 主逻辑 (安全显示版)
 # ==========================================
 def clear_state():
     st.session_state.link_input = ""
@@ -353,9 +383,7 @@ def clear_state():
     st.session_state.task_summary = {}
 
 def add_log(message: str, is_error=False):
-    """添加日志到SessionState"""
     timestamp = datetime.now().strftime("%H:%M:%S")
-    icon = "❌" if is_error else "ℹ️"
     log_entry = f"`{timestamp}` {message}"
     st.session_state.process_logs.append(log_entry)
 
@@ -383,22 +411,19 @@ def main():
             b_img_pwd = st.text_input("提取码", value=FIXED_IMAGE_CONFIG['baidu']['pwd'], key="b_img_pwd")
             if b_img_url: FIXED_IMAGE_CONFIG['baidu']['url'] = b_img_url; FIXED_IMAGE_CONFIG['baidu']['pwd'] = b_img_pwd; FIXED_IMAGE_CONFIG['baidu']['enabled'] = True
 
-    st.info("💡 提示：支持混合输入链接。**手机端可将浏览器置于后台，回来后可查看结果。**")
+    st.info("💡 提示：支持混合输入夸克和百度链接，程序会自动识别并分类处理。")
     input_text = st.text_area("📝 请在此处粘贴链接文本...", height=200, key="link_input")
 
     col1, col2 = st.columns([1, 4])
     
-    # 开始按钮
     if col1.button("🚀 开始转存", type="primary", use_container_width=True):
         if not input_text.strip():
             st.toast("请输入内容", icon="⚠️"); return
 
-        # 清空旧状态
         st.session_state.process_logs = []
         st.session_state.final_result_cache = ""
         st.session_state.process_status = "running"
         
-        # 识别链接
         quark_regex = re.compile(r'(https://pan\.quark\.cn/s/[a-zA-Z0-9]+(?:\?pwd=[a-zA-Z0-9]+)?)')
         baidu_regex = re.compile(r'(https?://pan\.baidu\.com/s/[a-zA-Z0-9_\-]+(?:\?pwd=[a-zA-Z0-9]+)?)')
         q_matches = list(quark_regex.finditer(input_text))
@@ -417,7 +442,6 @@ def main():
             success_count = 0
             current_idx = 0
             
-            # 创建占位符用于实时显示
             status_container = st.status(f"正在处理 {total_tasks} 个任务...", expanded=True)
             log_placeholder = status_container.empty()
 
@@ -440,7 +464,7 @@ def main():
                                     current_idx += 1
                                     raw_url = match.group(1)
                                     add_log(f"🔄 **[{current_idx}/{total_tasks}]** 处理: `{raw_url}`")
-                                    log_placeholder.markdown("\n\n".join(st.session_state.process_logs)) # 实时刷新UI
+                                    log_placeholder.markdown("\n\n".join(st.session_state.process_logs))
                                     
                                     t_task = time.time()
                                     new_url, msg, new_fid = await q_engine.process_url(raw_url, root_fid)
@@ -509,7 +533,6 @@ def main():
                 if q_engine: await q_engine.close()
                 status_container.update(label="处理完成", state="complete", expanded=False)
                 
-                # === 📱 核心：保存结果到 Session State ===
                 st.session_state.final_result_cache = final_text
                 st.session_state.process_status = "done"
                 st.session_state.task_summary = {
@@ -517,7 +540,7 @@ def main():
                     "total": total_tasks,
                     "duration": str(datetime.now() - start_time)
                 }
-                st.rerun() # 强制刷新以显示持久化结果
+                st.rerun()
 
         asyncio.run(run_process())
 
@@ -525,7 +548,7 @@ def main():
         pass
 
     # ==========================================
-    # 5. 持久化结果展示区 (防止刷新丢失)
+    # 5. 持久化结果展示区
     # ==========================================
     if st.session_state.process_logs:
         with st.expander("📜 处理日志历史 (点击展开)", expanded=(st.session_state.process_status != 'done')):
@@ -533,11 +556,18 @@ def main():
                 st.markdown(log)
 
     if st.session_state.final_result_cache:
+        # 安全获取耗时数据，防止TypeError
+        duration_str = st.session_state.task_summary.get('duration', '0s')
+        if isinstance(duration_str, str) and len(duration_str) > 4:
+            safe_duration = duration_str[:-4]
+        else:
+            safe_duration = duration_str
+
         st.markdown(f"""
         <div class="result-box">
             <h3>✨ 处理完成</h3>
-            <p>成功: <b>{st.session_state.task_summary.get('success')}</b> / {st.session_state.task_summary.get('total')} 
-            &nbsp;|&nbsp; 耗时: {st.session_state.task_summary.get('duration')[:-4]}</p>
+            <p>成功: <b>{st.session_state.task_summary.get('success', 0)}</b> / {st.session_state.task_summary.get('total', 0)} 
+            &nbsp;|&nbsp; 耗时: {safe_duration}</p>
         </div>
         """, unsafe_allow_html=True)
         st.balloons()
