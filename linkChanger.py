@@ -64,28 +64,29 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# 📱 修复版：针对 Streamlit 内部容器的回到顶部代码
+# 📱 终极修复版：悬浮球 (位置上移 + 暴力层级 + 自动重试绑定)
 st.markdown("""
     <style>
     #scrollTopBtn {
-        display: none; /* 默认隐藏 */
+        display: none; 
         position: fixed;
-        bottom: 40px; /* 稍微调低一点适应手机 */
+        bottom: 120px; /* ⬆️ 上移到 120px，避开手机底部工具栏 */
         right: 20px;
-        z-index: 99999; /* 层级极高 */
-        font-size: 20px;
+        z-index: 2147483647; /* 🔝 层级拉满，保证在最上层 */
+        font-size: 22px;
         background-color: #ff4b4b;
         color: white;
         cursor: pointer;
         border-radius: 50%;
-        width: 45px;
-        height: 45px;
-        box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+        width: 50px;
+        height: 50px;
+        box-shadow: 0 4px 15px rgba(0,0,0,0.4);
         align-items: center;
         justify-content: center;
-        transition: transform 0.2s;
+        transition: all 0.3s ease;
         user-select: none;
         -webkit-tap-highlight-color: transparent;
+        opacity: 0.9;
     }
     #scrollTopBtn:active {
         transform: scale(0.9);
@@ -93,46 +94,62 @@ st.markdown("""
     }
     </style>
     
-    <div id="scrollTopBtn" onclick="scrollToTop()" title="回到顶部">
-        ⇧
+    <div id="scrollTopBtn" onclick="scrollToTop()">
+        ⬆️
     </div>
 
     <script>
-    // 关键修复：定位 Streamlit 真正的滚动容器
-    function getScrollContainer() {
-        return document.querySelector('[data-testid="stAppViewContainer"]');
-    }
-
-    var scrollBtn = document.getElementById("scrollTopBtn");
-    var container = getScrollContainer();
-
-    function scrollFunction() {
-        if (!container) container = getScrollContainer();
-        if (container && container.scrollTop > 300) {
-            scrollBtn.style.display = "flex";
-        } else {
-            scrollBtn.style.display = "none";
+    // 持续尝试寻找滚动容器，直到找到为止 (适配 Streamlit 动态加载)
+    function attachScrollListener() {
+        // Streamlit 的主滚动容器通常是这个
+        const container = window.parent.document.querySelector('[data-testid="stAppViewContainer"]') || 
+                          document.querySelector('[data-testid="stAppViewContainer"]') ||
+                          document.body;
+        
+        const btn = document.getElementById("scrollTopBtn");
+        
+        if (container && btn) {
+            // 移除旧监听器防止重复
+            container.removeEventListener('scroll', checkScroll);
+            container.addEventListener('scroll', checkScroll);
+            
+            // 同时也监听 window 滚动 (双保险)
+            window.removeEventListener('scroll', checkScroll);
+            window.addEventListener('scroll', checkScroll);
+            
+            console.log("Scroll listener attached to:", container);
+            return true;
         }
+        return false;
     }
 
-    // 绑定监听事件到容器上，而不是 window
-    if (container) {
-        container.removeEventListener('scroll', scrollFunction); // 防止重复绑定
-        container.addEventListener('scroll', scrollFunction);
-    } else {
-        // 如果页面刚加载找不到容器，尝试延迟绑定
-        setTimeout(() => {
-            var c = getScrollContainer();
-            if (c) c.addEventListener('scroll', scrollFunction);
-        }, 1000);
+    function checkScroll() {
+        const container = window.parent.document.querySelector('[data-testid="stAppViewContainer"]') || document.body;
+        const btn = document.getElementById("scrollTopBtn");
+        
+        // 只要任一地方检测到滚动超过 300px 就显示
+        if ((container.scrollTop > 300) || (window.scrollY > 300)) {
+            btn.style.display = "flex";
+        } else {
+            btn.style.display = "none";
+        }
     }
 
     function scrollToTop() {
-        var c = getScrollContainer();
-        if (c) {
-            c.scrollTo({top: 0, behavior: 'smooth'});
-        }
+        const container = window.parent.document.querySelector('[data-testid="stAppViewContainer"]') || document.body;
+        
+        // 同时尝试滚动容器和窗口
+        if(container) container.scrollTo({top: 0, behavior: 'smooth'});
+        window.scrollTo({top: 0, behavior: 'smooth'});
     }
+
+    // 每秒检查一次是否需要重新绑定 (防止页面刷新后失效)
+    setInterval(() => {
+        attachScrollListener();
+    }, 1000);
+    
+    // 立即尝试一次
+    setTimeout(attachScrollListener, 500);
     </script>
 """, unsafe_allow_html=True)
 
