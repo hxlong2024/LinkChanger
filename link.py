@@ -8,6 +8,8 @@ import time
 import random
 import string
 import json
+import threading
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Union, List, Any
 from retrying import retry
@@ -42,24 +44,63 @@ QUARK_SAVE_PATH = "来自：分享/LinkChanger"
 BAIDU_SAVE_PATH = "/我的资源/LinkChanger"
 
 # ==========================================
-# 1. 页面配置与样式
+# 1. 核心：后台任务管理器 (Global State)
+# ==========================================
+# 使用 cache_resource 保证数据在服务器内存中持久化，不随浏览器刷新而丢失
+@st.cache_resource
+class JobManager:
+    def __init__(self):
+        self.jobs = {} # 存储所有任务的状态 {job_id: {status, logs, result, progress}}
+
+    def create_job(self):
+        job_id = str(uuid.uuid4())[:8]
+        self.jobs[job_id] = {
+            "status": "running",
+            "logs": [],
+            "result_text": "",
+            "progress": {"current": 0, "total": 0},
+            "created_at": datetime.now(),
+            "summary": {}
+        }
+        return job_id
+
+    def get_job(self, job_id):
+        return self.jobs.get(job_id)
+
+    def add_log(self, job_id, message):
+        if job_id in self.jobs:
+            timestamp = (datetime.now(timezone.utc) + timedelta(hours=8)).strftime("%H:%M:%S")
+            self.jobs[job_id]["logs"].append(f"`{timestamp}` {message}")
+
+    def update_progress(self, job_id, current, total):
+        if job_id in self.jobs:
+            self.jobs[job_id]["progress"] = {"current": current, "total": total}
+
+    def complete_job(self, job_id, final_text, summary):
+        if job_id in self.jobs:
+            self.jobs[job_id]["status"] = "done"
+            self.jobs[job_id]["result_text"] = final_text
+            self.jobs[job_id]["summary"] = summary
+
+# 实例化全局管理器
+job_manager = JobManager()
+
+# ==========================================
+# 2. 页面配置与样式
 # ==========================================
 st.set_page_config(
-    page_title="网盘转存助手",
-    page_icon="📂",
+    page_title="网盘转存助手 (后台版)",
+    page_icon="🚀",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# ⚓️ 顶部锚点
+# 锚点
 st.markdown('<div id="top-anchor" style="position:absolute; top:-50px; visibility:hidden;"></div>', unsafe_allow_html=True)
 
 st.markdown("""
     <style>
-    .block-container {
-        padding-top: 32px !important;
-        padding-bottom: 3rem;
-    }
+    .block-container { padding-top: 32px !important; padding-bottom: 3rem; }
     .stTextArea textarea { font-family: 'Source Code Pro', monospace; font-size: 14px; }
     .success-text { color: #09ab3b; font-weight: bold; }
     .stStatusWidget { border: 1px solid #e0e0e0; border-radius: 8px; }
@@ -69,27 +110,13 @@ st.markdown("""
     .time-tag { color: #888; font-size: 0.85em; margin-left: 8px; font-family: monospace; }
     .result-box { border: 2px solid #e6f4ea; padding: 15px; border-radius: 10px; background-color: #f9fdfa; margin-top: 20px; }
     
-    /* 隐藏音频播放器 */
-    audio { display: none; }
+    /* 运行中动画 */
+    @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.5; } 100% { opacity: 1; } }
+    .running-badge { color: #0088ff; font-weight: bold; animation: pulse 1.5s infinite; }
     </style>
 """, unsafe_allow_html=True)
 
-# 初始化状态
-if 'process_logs' not in st.session_state:
-    st.session_state.process_logs = []
-if 'final_result_cache' not in st.session_state:
-    st.session_state.final_result_cache = ""
-if 'process_status' not in st.session_state:
-    st.session_state.process_status = None
-if 'task_summary' not in st.session_state:
-    st.session_state.task_summary = {}
-
 INVALID_CHARS_REGEX = re.compile(r'[^\u4e00-\u9fa5a-zA-Z0-9_\-\s]')
-
-def get_beijing_time_str():
-    utc_now = datetime.now(timezone.utc)
-    beijing_now = utc_now + timedelta(hours=8)
-    return beijing_now.strftime("%H:%M:%S")
 
 def get_time_diff(start_time):
     diff = time.time() - start_time
@@ -132,7 +159,7 @@ def extract_smart_folder_name(full_text: str, match_start: int) -> str:
     return final_name[:50]
 
 # ==========================================
-# 2. 夸克引擎 (Async)
+# 3. 引擎类 (夸克 & 百度)
 # ==========================================
 class QuarkEngine:
     def __init__(self, cookies: str):
@@ -186,7 +213,6 @@ class QuarkEngine:
             passcode = match.group(1) if match else ""
         except: return None, "解析异常", None
 
-        # 1. Token
         try:
             r = await self.client.post("https://drive-pc.quark.cn/1/clouddrive/share/sharepage/token", 
                                      json={"pwd_id": pwd_id, "passcode": passcode}, params=self._params())
@@ -194,7 +220,6 @@ class QuarkEngine:
             if not stoken: return None, "提取码失效", None
         except: return None, "Token请求失败", None
 
-        # 2. Detail
         params = self._params()
         params.update({"pwd_id": pwd_id, "stoken": stoken, "pdir_fid": "0", "_page": 1, "_size": 50})
         try:
@@ -206,7 +231,6 @@ class QuarkEngine:
             first_name = items[0]['file_name']
         except: return None, "获取详情失败", None
 
-        # 3. Transfer
         save_data = {"fid_list": source_fids, "fid_token_list": source_tokens, "to_pdir_fid": target_fid, 
                      "pwd_id": pwd_id, "stoken": stoken, "pdir_fid": "0", "scene": "link"}
         try:
@@ -217,7 +241,6 @@ class QuarkEngine:
 
         if is_inject: return "INJECT_OK", "植入成功", None
 
-        # 4. Wait
         for _ in range(8):
             await asyncio.sleep(1)
             try:
@@ -227,7 +250,6 @@ class QuarkEngine:
                 if r.json().get('data', {}).get('status') == 2: break
             except: pass
 
-        # 5. Find New
         await asyncio.sleep(1.5)
         new_fid = None
         params = self._params()
@@ -243,7 +265,6 @@ class QuarkEngine:
         
         if not new_fid: return None, "✅ 已存入网盘 (但无法获取文件ID，未分享)", None
 
-        # 6. Share
         share_data = {"fid_list": [new_fid], "title": first_name, "url_type": 1, "expired_type": 1}
         try:
             r = await self.client.post("https://drive-pc.quark.cn/1/clouddrive/share", json=share_data, params=self._params())
@@ -262,9 +283,6 @@ class QuarkEngine:
             return r.json()['data']['share_url'], "成功", new_fid
         except: return None, "✅ 已存入网盘 (但分享创建异常)", None
 
-# ==========================================
-# 3. 百度引擎 (Sync - 增强稳定性版)
-# ==========================================
 class BaiduEngine:
     def __init__(self, cookies: str):
         self.s = requests.Session()
@@ -386,246 +404,226 @@ class BaiduEngine:
             return None, f"发生异常: {str(e)[:20]}...", None
 
 # ==========================================
-# 4. 主逻辑
+# 5. 核心：后台线程 Worker (执行实际转存)
 # ==========================================
-def clear_state():
-    st.session_state.link_input = ""
-    st.session_state.process_logs = []
-    st.session_state.final_result_cache = ""
-    st.session_state.process_status = None
-    st.session_state.task_summary = {}
-
-def add_log(message: str, is_error=False):
-    timestamp = get_beijing_time_str() # 北京时间
-    log_entry = f"`{timestamp}` {message}"
-    st.session_state.process_logs.append(log_entry)
-
-def main():
-    st.title("网盘转存助手")
+def worker_thread(job_id, input_text, quark_cookie, baidu_cookie):
+    """这是在服务器后台跑的函数，不受浏览器断连影响"""
     
-    with st.sidebar:
-        st.header("⚙️ 账号配置")
-        
-        # 📱【核心修改】防断连开关
-        st.info("💡 手机端建议开启下方开关，防止切后台中断。")
-        keep_alive = st.checkbox("🛡️ 防休眠 (后台运行模式)", value=True, help="开启后会播放静音音频，防止手机浏览器切后台时断开连接。")
-        
-        tab_q, tab_b = st.tabs(["☁️ 夸克设置", "🐻 百度设置"])
-        
-        with tab_q:
-            q_cookie_default = get_secret("quark", "cookie")
-            quark_cookie = st.text_area("夸克 Cookie", value=q_cookie_default, height=100, key="q_c", placeholder="b-user-id=...")
-            st.divider()
-            st.markdown("🖼️ **图片植入**")
-            q_img_url = st.text_input("图片分享链接", value=FIXED_IMAGE_CONFIG['quark']['url'], key="q_img")
-            if q_img_url: FIXED_IMAGE_CONFIG['quark']['url'] = q_img_url; FIXED_IMAGE_CONFIG['quark']['enabled'] = True
-            
-        with tab_b:
-            b_cookie_default = get_secret("baidu", "cookie")
-            baidu_cookie = st.text_area("百度 Cookie", value=b_cookie_default, height=100, key="b_c", placeholder="BDUSS=...")
-            st.divider()
-            st.markdown("🖼️ **图片植入**")
-            b_img_url = st.text_input("图片分享链接", value=FIXED_IMAGE_CONFIG['baidu']['url'], key="b_img")
-            b_img_pwd = st.text_input("提取码", value=FIXED_IMAGE_CONFIG['baidu']['pwd'], key="b_img_pwd")
-            if b_img_url: FIXED_IMAGE_CONFIG['baidu']['url'] = b_img_url; FIXED_IMAGE_CONFIG['baidu']['pwd'] = b_img_pwd; FIXED_IMAGE_CONFIG['baidu']['enabled'] = True
-
-    # 📱【核心修改】注入 JS 防休眠代码
-    if keep_alive:
-        st.markdown("""
-            <audio id="keepAliveAudio" loop>
-                <source src="https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3" type="audio/mpeg">
-            </audio>
-            <script>
-                // 1. 自动播放静音音频
-                var audio = document.getElementById("keepAliveAudio");
-                audio.volume = 0; // 静音
-                
-                // 尝试自动播放
-                function playAudio() {
-                    audio.play().catch(e => console.log("Audio play blocked by browser policy"));
-                }
-                
-                // 任意点击时触发播放 (解决浏览器自动播放策略)
-                document.addEventListener('click', playAudio);
-                document.addEventListener('touchstart', playAudio);
-                
-                // 2. 简单的 Wake Lock (尝试保持屏幕常亮)
-                let wakeLock = null;
-                async function requestWakeLock() {
-                    try {
-                        wakeLock = await navigator.wakeLock.request('screen');
-                        console.log('Wake Lock active');
-                    } catch (err) {
-                        console.log('Wake Lock failed:', err.name, err.message);
-                    }
-                }
-                requestWakeLock();
-            </script>
-        """, unsafe_allow_html=True)
-
-    input_text = st.text_area("📝 请在此处粘贴链接文本...", height=200, key="link_input")
-
-    col1, col2 = st.columns([1, 4])
-    
-    if col1.button("🚀 开始转存", type="primary", use_container_width=True):
-        if not input_text.strip():
-            st.toast("请输入内容", icon="⚠️"); return
-
-        st.session_state.process_logs = []
-        st.session_state.final_result_cache = ""
-        st.session_state.process_status = "running"
+    # 异步函数需要包装一下在线程里跑
+    async def async_worker():
+        start_time = datetime.now()
+        final_text = input_text
+        success_count = 0
+        current_idx = 0
         
         quark_regex = re.compile(r'(https://pan\.quark\.cn/s/[a-zA-Z0-9]+(?:\?pwd=[a-zA-Z0-9]+)?)')
         baidu_regex = re.compile(r'(https?://pan\.baidu\.com/s/[a-zA-Z0-9_\-]+(?:\?pwd=[a-zA-Z0-9]+)?)')
         q_matches = list(quark_regex.finditer(input_text))
         b_matches = list(baidu_regex.finditer(input_text))
         total_tasks = len(q_matches) + len(b_matches)
-
-        if total_tasks == 0:
-            st.warning("❌ 未识别到有效链接"); st.stop()
-
+        
+        job_manager.update_progress(job_id, 0, total_tasks)
+        
+        # 初始化引擎
         q_engine = QuarkEngine(quark_cookie) if q_matches else None
         b_engine = BaiduEngine(baidu_cookie) if b_matches else None
 
-        async def run_process():
-            start_time = datetime.now()
-            final_text = input_text
-            success_count = 0
-            current_idx = 0
-            
-            status_container = st.status(f"正在处理 {total_tasks} 个任务...", expanded=True)
-            log_placeholder = status_container.empty()
-
-            try:
-                # --- 夸克 ---
-                if q_matches:
-                    if not quark_cookie: add_log("❌ 夸克：未配置Cookie，跳过", True)
+        try:
+            # --- 夸克 ---
+            if q_matches:
+                if not quark_cookie: job_manager.add_log(job_id, "❌ 夸克：未配置Cookie，跳过")
+                else:
+                    job_manager.add_log(job_id, "--- ☁️ **开始处理夸克链接** ---")
+                    t0 = time.time()
+                    user = await q_engine.check_login()
+                    if not user: job_manager.add_log(job_id, f"❌ 登录失败 ({get_time_diff(t0)})")
                     else:
-                        add_log("--- ☁️ **开始处理夸克链接** ---")
+                        job_manager.add_log(job_id, f"✅ 登录成功: {user} ({get_time_diff(t0)})")
                         t0 = time.time()
-                        user = await q_engine.check_login()
-                        if not user: add_log(f"❌ 登录失败 ({get_time_diff(t0)})", True)
+                        root_fid = await q_engine.get_folder_id(QUARK_SAVE_PATH)
+                        if not root_fid: job_manager.add_log(job_id, f"❌ 目录不存在 ({get_time_diff(t0)})")
                         else:
-                            add_log(f"✅ 登录成功: {user} ({get_time_diff(t0)})")
-                            t0 = time.time()
-                            root_fid = await q_engine.get_folder_id(QUARK_SAVE_PATH)
-                            if not root_fid: add_log(f"❌ 目录不存在 ({get_time_diff(t0)})", True)
-                            else:
-                                for match in q_matches:
-                                    current_idx += 1
-                                    raw_url = match.group(1)
-                                    add_log(f"🔄 [{current_idx}/{total_tasks}] 处理: `{raw_url}`")
-                                    log_placeholder.markdown("\n\n".join(st.session_state.process_logs))
-                                    
-                                    t_task = time.time()
-                                    new_url, msg, new_fid = await q_engine.process_url(raw_url, root_fid)
-                                    t_task_end = get_time_diff(t_task)
-                                    
-                                    if new_url:
-                                        log_msg = f"✅ 成功 ({t_task_end})"
-                                        if FIXED_IMAGE_CONFIG['quark']['enabled'] and new_fid:
-                                            t_img = time.time()
-                                            res_url, res_msg, _ = await q_engine.process_url(FIXED_IMAGE_CONFIG['quark']['url'], new_fid, is_inject=True)
-                                            if res_url == "INJECT_OK": log_msg += f" + 图片 ({get_time_diff(t_img)})"
-                                            else: log_msg += f" (图片失败: {res_msg})"
-                                        
-                                        add_log(f"  ↳ {log_msg}")
-                                        final_text = final_text.replace(raw_url, new_url)
-                                        success_count += 1
-                                    else:
-                                        is_err = "✅" not in msg
-                                        add_log(f"  ↳ {msg} ({t_task_end})", is_err)
-
-                                    if current_idx < total_tasks: await asyncio.sleep(random.uniform(2, 4))
-
-                # --- 百度 ---
-                if b_matches:
-                    if not baidu_cookie: add_log("❌ 百度：未配置Cookie，跳过", True)
-                    else:
-                        add_log("--- 🐻 **开始处理百度链接** ---")
-                        t0 = time.time()
-                        if not b_engine.init_token(): add_log(f"❌ 登录失败 ({get_time_diff(t0)})", True)
-                        else:
-                            add_log(f"✅ 登录成功 ({get_time_diff(t0)})")
-                            if not b_engine.check_dir_exists(BAIDU_SAVE_PATH): b_engine.create_dir(BAIDU_SAVE_PATH)
-                            
-                            for match in b_matches:
+                            for match in q_matches:
                                 current_idx += 1
                                 raw_url = match.group(1)
-                                pwd_match = re.search(r'(?:\?pwd=|&pwd=|\s+|提取码[:：]?\s*)([a-zA-Z0-9]{4})', match.group(0))
-                                pwd = pwd_match.group(1) if pwd_match else ""
-                                name = extract_smart_folder_name(input_text, match.start())
-                                
-                                add_log(f"🔄 [{current_idx}/{total_tasks}] 处理: `{name}`")
-                                log_placeholder.markdown("\n\n".join(st.session_state.process_logs))
+                                job_manager.add_log(job_id, f"🔄 [{current_idx}/{total_tasks}] 处理: `{raw_url}`")
+                                job_manager.update_progress(job_id, current_idx, total_tasks)
                                 
                                 t_task = time.time()
-                                new_url, msg, new_dir_path = b_engine.process_url({'url': raw_url, 'pwd': pwd, 'name': name}, BAIDU_SAVE_PATH)
+                                new_url, msg, new_fid = await q_engine.process_url(raw_url, root_fid)
                                 t_task_end = get_time_diff(t_task)
                                 
                                 if new_url:
                                     log_msg = f"✅ 成功 ({t_task_end})"
-                                    if FIXED_IMAGE_CONFIG['baidu']['enabled'] and new_dir_path:
+                                    if FIXED_IMAGE_CONFIG['quark']['enabled'] and new_fid:
                                         t_img = time.time()
-                                        img_res_url, img_msg, _ = b_engine.process_url({'url': FIXED_IMAGE_CONFIG['baidu']['url'], 'pwd': FIXED_IMAGE_CONFIG['baidu']['pwd']}, new_dir_path, is_inject=True)
-                                        if img_res_url == "INJECT_OK": log_msg += f" + 图片 ({get_time_diff(t_img)})"
-                                        else: log_msg += f" (图片失败: {img_msg})"
-
-                                    add_log(f"  ↳ {log_msg}")
+                                        res_url, res_msg, _ = await q_engine.process_url(FIXED_IMAGE_CONFIG['quark']['url'], new_fid, is_inject=True)
+                                        if res_url == "INJECT_OK": log_msg += f" + 图片 ({get_time_diff(t_img)})"
+                                        else: log_msg += f" (图片失败: {res_msg})"
+                                    
+                                    job_manager.add_log(job_id, f"  ↳ {log_msg}")
                                     final_text = final_text.replace(raw_url, new_url)
                                     success_count += 1
                                 else:
-                                    is_err = "✅" not in msg
-                                    add_log(f"  ↳ {msg} ({t_task_end})", is_err)
+                                    job_manager.add_log(job_id, f"  ↳ {msg} ({t_task_end})")
 
-                                if current_idx < total_tasks: time.sleep(random.uniform(2, 4))
+                                # 随机冷却
+                                await asyncio.sleep(random.uniform(2, 4))
 
-            finally:
-                if q_engine: await q_engine.close()
-                status_container.update(label="处理完成", state="complete", expanded=False)
+            # --- 百度 ---
+            if b_matches:
+                if not baidu_cookie: job_manager.add_log(job_id, "❌ 百度：未配置Cookie，跳过")
+                else:
+                    job_manager.add_log(job_id, "--- 🐻 **开始处理百度链接** ---")
+                    t0 = time.time()
+                    if not b_engine.init_token(): job_manager.add_log(job_id, f"❌ 登录失败 ({get_time_diff(t0)})")
+                    else:
+                        job_manager.add_log(job_id, f"✅ 登录成功 ({get_time_diff(t0)})")
+                        if not b_engine.check_dir_exists(BAIDU_SAVE_PATH): b_engine.create_dir(BAIDU_SAVE_PATH)
+                        
+                        for match in b_matches:
+                            current_idx += 1
+                            raw_url = match.group(1)
+                            pwd_match = re.search(r'(?:\?pwd=|&pwd=|\s+|提取码[:：]?\s*)([a-zA-Z0-9]{4})', match.group(0))
+                            pwd = pwd_match.group(1) if pwd_match else ""
+                            name = extract_smart_folder_name(input_text, match.start())
+                            
+                            job_manager.add_log(job_id, f"🔄 [{current_idx}/{total_tasks}] 处理: `{name}`")
+                            job_manager.update_progress(job_id, current_idx, total_tasks)
+                            
+                            t_task = time.time()
+                            # 百度引擎是同步的，但在 async 函数里跑也没问题
+                            new_url, msg, new_dir_path = b_engine.process_url({'url': raw_url, 'pwd': pwd, 'name': name}, BAIDU_SAVE_PATH)
+                            t_task_end = get_time_diff(t_task)
+                            
+                            if new_url:
+                                log_msg = f"✅ 成功 ({t_task_end})"
+                                if FIXED_IMAGE_CONFIG['baidu']['enabled'] and new_dir_path:
+                                    t_img = time.time()
+                                    img_res_url, img_msg, _ = b_engine.process_url({'url': FIXED_IMAGE_CONFIG['baidu']['url'], 'pwd': FIXED_IMAGE_CONFIG['baidu']['pwd']}, new_dir_path, is_inject=True)
+                                    if img_res_url == "INJECT_OK": log_msg += f" + 图片 ({get_time_diff(t_img)})"
+                                    else: log_msg += f" (图片失败: {img_msg})"
+
+                                job_manager.add_log(job_id, f"  ↳ {log_msg}")
+                                final_text = final_text.replace(raw_url, new_url)
+                                success_count += 1
+                            else:
+                                job_manager.add_log(job_id, f"  ↳ {msg} ({t_task_end})")
+
+                            time.sleep(random.uniform(2, 4))
+
+        finally:
+            if q_engine: await q_engine.close()
+            duration = str(datetime.now() - start_time)
+            summary = {"success": success_count, "total": total_tasks, "duration": duration}
+            job_manager.complete_job(job_id, final_text, summary)
+
+    # 启动异步循环
+    asyncio.run(async_worker())
+
+# ==========================================
+# 6. 主逻辑 (前端 UI)
+# ==========================================
+def main():
+    st.title("网盘转存助手")
+    
+    with st.sidebar:
+        st.header("⚙️ 账号配置")
+        tab_q, tab_b = st.tabs(["☁️ 夸克", "🐻 百度"])
+        with tab_q:
+            q_c = st.text_area("夸克Cookie", value=get_secret("quark", "cookie"), height=100, key="q_c")
+            q_img_url = st.text_input("夸克图片链接", value=FIXED_IMAGE_CONFIG['quark']['url'], key="q_img")
+            if q_img_url: FIXED_IMAGE_CONFIG['quark']['url'] = q_img_url; FIXED_IMAGE_CONFIG['quark']['enabled'] = True
+        with tab_b:
+            b_c = st.text_area("百度Cookie", value=get_secret("baidu", "cookie"), height=100, key="b_c")
+            b_img_url = st.text_input("百度图片链接", value=FIXED_IMAGE_CONFIG['baidu']['url'], key="b_img")
+            b_img_pwd = st.text_input("百度提取码", value=FIXED_IMAGE_CONFIG['baidu']['pwd'], key="b_img_pwd")
+            if b_img_url: FIXED_IMAGE_CONFIG['baidu']['url'] = b_img_url; FIXED_IMAGE_CONFIG['baidu']['pwd'] = b_img_pwd; FIXED_IMAGE_CONFIG['baidu']['enabled'] = True
+
+    # 1️⃣ 检查是否有正在运行的任务 (从 URL 获取 job_id)
+    # Streamlit Cloud 兼容性写法
+    query_params = st.query_params
+    current_job_id = query_params.get("job_id", None)
+
+    # 如果没有任务，显示输入框
+    if not current_job_id:
+        st.info("💡 提示：点击开始后，**你可以关闭网页或切到后台**。重新打开此页面即可查看进度。")
+        input_text = st.text_area("📝 请在此处粘贴链接文本...", height=200, key="link_input")
+        
+        if st.button("🚀 开始后台转存", type="primary", use_container_width=True):
+            if not input_text.strip():
+                st.toast("请输入内容", icon="⚠️"); return
+            
+            # 创建新任务
+            new_job_id = job_manager.create_job()
+            
+            # 启动后台线程
+            t = threading.Thread(target=worker_thread, args=(new_job_id, input_text, q_c, b_c))
+            t.start()
+            
+            # 更新 URL 并刷新页面进入监控模式
+            st.query_params["job_id"] = new_job_id
+            st.rerun()
+
+    # 2️⃣ 如果有任务，显示监控面板
+    else:
+        job_data = job_manager.get_job(current_job_id)
+        
+        if not job_data:
+            st.error("❌ 任务不存在或已过期 (服务器重启会导致任务丢失)")
+            if st.button("🔙 返回首页"):
+                st.query_params.clear()
+                st.rerun()
+        else:
+            status = job_data['status']
+            
+            # 标题状态
+            if status == "running":
+                st.markdown(f"### 🔄 正在后台运行中... <span class='running-badge'>RUNNING</span>", unsafe_allow_html=True)
+                st.caption(f"任务ID: `{current_job_id}` (你可以随时关闭此页面，回来查看结果)")
+            else:
+                st.markdown("### ✅ 任务已完成")
+
+            # 进度条
+            prog = job_data['progress']
+            if prog['total'] > 0:
+                st.progress(prog['current'] / prog['total'], text=f"进度: {prog['current']} / {prog['total']}")
+
+            # 日志显示
+            with st.expander("📜 实时日志 (自动刷新)", expanded=True):
+                # 倒序显示，最新的在上面
+                for log in reversed(job_data['logs']):
+                    st.markdown(log)
+
+            # 如果任务完成，显示结果
+            if status == "done":
+                res_text = job_data['result_text']
+                summary = job_data['summary']
                 
-                st.session_state.final_result_cache = final_text
-                st.session_state.process_status = "done"
-                st.session_state.task_summary = {
-                    "success": success_count,
-                    "total": total_tasks,
-                    "duration": str(datetime.now() - start_time)
-                }
+                # 安全获取 duration
+                duration_str = str(summary.get('duration', '0s'))
+                safe_duration = duration_str[:-4] if len(duration_str) > 4 else duration_str
+
+                st.markdown(f"""
+                <div class="result-box">
+                    <h3>✨ 处理统计</h3>
+                    <p>成功: <b>{summary.get('success', 0)}</b> / {summary.get('total', 0)} 
+                    &nbsp;|&nbsp; 耗时: {safe_duration}</p>
+                </div>
+                """, unsafe_allow_html=True)
+                
+                st.text_area("⬇️ 最终结果", value=res_text, height=250)
+                components.html(create_copy_button_html(res_text), height=80)
+                
+                if st.button("🗑️ 开始新任务", use_container_width=True):
+                    st.query_params.clear()
+                    st.rerun()
+            else:
+                # 运行中，自动刷新页面以获取最新日志
+                time.sleep(2) # 每2秒刷新一次
                 st.rerun()
 
-        asyncio.run(run_process())
-
-    if col2.button("🗑️ 清空内容", use_container_width=True, on_click=clear_state):
-        pass
-
-    # ==========================================
-    # 5. 持久化结果展示区
-    # ==========================================
-    if st.session_state.process_logs:
-        with st.expander("📜 处理日志历史 (点击展开)", expanded=(st.session_state.process_status != 'done')):
-            for log in st.session_state.process_logs:
-                st.markdown(log)
-
-    if st.session_state.final_result_cache:
-        # 安全获取耗时
-        duration_str = st.session_state.task_summary.get('duration', '0s')
-        if isinstance(duration_str, str) and len(duration_str) > 4:
-            safe_duration = duration_str[:-4]
-        else:
-            safe_duration = duration_str
-
-        st.markdown(f"""
-        <div class="result-box">
-            <h3>✨ 处理完成</h3>
-            <p>成功: <b>{st.session_state.task_summary.get('success', 0)}</b> / {st.session_state.task_summary.get('total', 0)} 
-            &nbsp;|&nbsp; 耗时: {safe_duration}</p>
-        </div>
-        """, unsafe_allow_html=True)
-        st.balloons()
-        st.text_area("⬇️ 最终结果 (已保存)", value=st.session_state.final_result_cache, height=250)
-        components.html(create_copy_button_html(st.session_state.final_result_cache), height=80)
-
-# 【优化后的悬浮按钮代码，SVG 图标，更圆润现代】
+# 悬浮球 (纯 CSS/HTML 锚点)
 st.markdown("""
     <style>
     .back-to-top {
@@ -641,8 +639,6 @@ st.markdown("""
         text-decoration: none;
         transition: all 0.3s ease;
         opacity: 0.85;
-        
-        /* 弹性布局确保图标完美居中 */
         display: flex;
         align-items: center;
         justify-content: center;
@@ -652,19 +648,14 @@ st.markdown("""
         opacity: 1;
         transform: scale(1.1);
     }
-    .back-to-top svg {
-        width: 28px;
-        height: 28px;
-        stroke: white; /* 强制图标为白色 */
-    }
+    .back-to-top svg { width: 28px; height: 28px; stroke: white; }
     </style>
-    
     <a href="#top-anchor" class="back-to-top" title="回到顶部">
         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2.5" stroke="currentColor">
           <path stroke-linecap="round" stroke-linejoin="round" d="M4.5 10.5 12 3m0 0 7.5 7.5M12 3v18" />
         </svg>
     </a>
-    """, unsafe_allow_html=True)
+""", unsafe_allow_html=True)
 
 if __name__ == "__main__":
     main()
