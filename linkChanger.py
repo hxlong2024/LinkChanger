@@ -8,7 +8,7 @@ import time
 import random
 import string
 import json
-from datetime import datetime
+from datetime import datetime, timedelta, timezone # 引入时区处理
 from typing import Union, List, Any
 from retrying import retry
 
@@ -75,6 +75,12 @@ if 'task_summary' not in st.session_state:
     st.session_state.task_summary = {}
 
 INVALID_CHARS_REGEX = re.compile(r'[^\u4e00-\u9fa5a-zA-Z0-9_\-\s]')
+
+# 获取北京时间字符串
+def get_beijing_time_str():
+    utc_now = datetime.now(timezone.utc)
+    beijing_now = utc_now + timedelta(hours=8)
+    return beijing_now.strftime("%H:%M:%S")
 
 def get_time_diff(start_time):
     diff = time.time() - start_time
@@ -326,22 +332,20 @@ class BaiduEngine:
                 save_path = f"{root_path}/{final_folder}"
                 self.create_dir(save_path) 
 
-            # 4. Transfer (增加超时控制，防止大文件卡死)
-            # 百度非会员转存超限文件会报错 errno: 12 或 -10
+            # 4. Transfer
             try:
                 r = self.s.post('https://pan.baidu.com/share/transfer', 
                                 params={'shareid': shareid, 'from': uk, 'bdstoken': self.bdstoken},
                                 data={'fsidlist': f"[{','.join(fs_id_list)}]", 'path': save_path}, 
-                                headers=self.headers, verify=False, timeout=20) # 20秒超时
+                                headers=self.headers, verify=False, timeout=20)
                 res = r.json()
             except requests.exceptions.RequestException:
                 return None, "转存请求超时(文件可能过大)", None
 
-            if res.get('errno') == 12: # 文件已存在
+            if res.get('errno') == 12: 
                  if is_inject: return "INJECT_OK", "文件已存在", save_path
                  return None, "转存失败(文件已存在)", None
             
-            # 处理常见非会员错误
             if res.get('errno') != 0: 
                 errno = res.get('errno')
                 err_msg = f"转存失败({errno})"
@@ -373,7 +377,7 @@ class BaiduEngine:
             return None, f"发生异常: {str(e)[:20]}...", None
 
 # ==========================================
-# 4. 主逻辑 (安全显示版)
+# 4. 主逻辑 (北京时间+无图标版)
 # ==========================================
 def clear_state():
     st.session_state.link_input = ""
@@ -383,7 +387,7 @@ def clear_state():
     st.session_state.task_summary = {}
 
 def add_log(message: str, is_error=False):
-    timestamp = datetime.now().strftime("%H:%M:%S")
+    timestamp = get_beijing_time_str() # 使用北京时间
     log_entry = f"`{timestamp}` {message}"
     st.session_state.process_logs.append(log_entry)
 
@@ -453,17 +457,17 @@ def main():
                         add_log("--- ☁️ **开始处理夸克链接** ---")
                         t0 = time.time()
                         user = await q_engine.check_login()
-                        if not user: add_log(f"❌ 登录失败 (⏱️ {get_time_diff(t0)})", True)
+                        if not user: add_log(f"❌ 登录失败 ({get_time_diff(t0)})", True)
                         else:
-                            add_log(f"✅ 登录成功: {user} (⏱️ {get_time_diff(t0)})")
+                            add_log(f"✅ 登录成功: {user} ({get_time_diff(t0)})")
                             t0 = time.time()
                             root_fid = await q_engine.get_folder_id(QUARK_SAVE_PATH)
-                            if not root_fid: add_log(f"❌ 目录不存在 (⏱️ {get_time_diff(t0)})", True)
+                            if not root_fid: add_log(f"❌ 目录不存在 ({get_time_diff(t0)})", True)
                             else:
                                 for match in q_matches:
                                     current_idx += 1
                                     raw_url = match.group(1)
-                                    add_log(f"🔄 **[{current_idx}/{total_tasks}]** 处理: `{raw_url}`")
+                                    add_log(f"🔄 [{current_idx}/{total_tasks}] 处理: `{raw_url}`")
                                     log_placeholder.markdown("\n\n".join(st.session_state.process_logs))
                                     
                                     t_task = time.time()
@@ -471,11 +475,11 @@ def main():
                                     t_task_end = get_time_diff(t_task)
                                     
                                     if new_url:
-                                        log_msg = f"✅ 成功 (⏱️ {t_task_end})"
+                                        log_msg = f"✅ 成功 ({t_task_end})"
                                         if FIXED_IMAGE_CONFIG['quark']['enabled'] and new_fid:
                                             t_img = time.time()
                                             res_url, res_msg, _ = await q_engine.process_url(FIXED_IMAGE_CONFIG['quark']['url'], new_fid, is_inject=True)
-                                            if res_url == "INJECT_OK": log_msg += f" + 图片 (⏱️ {get_time_diff(t_img)})"
+                                            if res_url == "INJECT_OK": log_msg += f" + 图片 ({get_time_diff(t_img)})"
                                             else: log_msg += f" (图片失败: {res_msg})"
                                         
                                         add_log(f"  ↳ {log_msg}")
@@ -483,7 +487,7 @@ def main():
                                         success_count += 1
                                     else:
                                         is_err = "✅" not in msg
-                                        add_log(f"  ↳ {msg} (⏱️ {t_task_end})", is_err)
+                                        add_log(f"  ↳ {msg} ({t_task_end})", is_err)
 
                                     if current_idx < total_tasks: await asyncio.sleep(random.uniform(2, 4))
 
@@ -493,9 +497,9 @@ def main():
                     else:
                         add_log("--- 🐻 **开始处理百度链接** ---")
                         t0 = time.time()
-                        if not b_engine.init_token(): add_log(f"❌ 登录失败 (⏱️ {get_time_diff(t0)})", True)
+                        if not b_engine.init_token(): add_log(f"❌ 登录失败 ({get_time_diff(t0)})", True)
                         else:
-                            add_log(f"✅ 登录成功 (⏱️ {get_time_diff(t0)})")
+                            add_log(f"✅ 登录成功 ({get_time_diff(t0)})")
                             if not b_engine.check_dir_exists(BAIDU_SAVE_PATH): b_engine.create_dir(BAIDU_SAVE_PATH)
                             
                             for match in b_matches:
@@ -505,7 +509,7 @@ def main():
                                 pwd = pwd_match.group(1) if pwd_match else ""
                                 name = extract_smart_folder_name(input_text, match.start())
                                 
-                                add_log(f"🔄 **[{current_idx}/{total_tasks}]** 处理: `{name}`")
+                                add_log(f"🔄 [{current_idx}/{total_tasks}] 处理: `{name}`")
                                 log_placeholder.markdown("\n\n".join(st.session_state.process_logs))
                                 
                                 t_task = time.time()
@@ -513,11 +517,11 @@ def main():
                                 t_task_end = get_time_diff(t_task)
                                 
                                 if new_url:
-                                    log_msg = f"✅ 成功 (⏱️ {t_task_end})"
+                                    log_msg = f"✅ 成功 ({t_task_end})"
                                     if FIXED_IMAGE_CONFIG['baidu']['enabled'] and new_dir_path:
                                         t_img = time.time()
                                         img_res_url, img_msg, _ = b_engine.process_url({'url': FIXED_IMAGE_CONFIG['baidu']['url'], 'pwd': FIXED_IMAGE_CONFIG['baidu']['pwd']}, new_dir_path, is_inject=True)
-                                        if img_res_url == "INJECT_OK": log_msg += f" + 图片 (⏱️ {get_time_diff(t_img)})"
+                                        if img_res_url == "INJECT_OK": log_msg += f" + 图片 ({get_time_diff(t_img)})"
                                         else: log_msg += f" (图片失败: {img_msg})"
 
                                     add_log(f"  ↳ {log_msg}")
@@ -525,7 +529,7 @@ def main():
                                     success_count += 1
                                 else:
                                     is_err = "✅" not in msg
-                                    add_log(f"  ↳ {msg} (⏱️ {t_task_end})", is_err)
+                                    add_log(f"  ↳ {msg} ({t_task_end})", is_err)
 
                                 if current_idx < total_tasks: time.sleep(random.uniform(2, 4))
 
@@ -556,7 +560,7 @@ def main():
                 st.markdown(log)
 
     if st.session_state.final_result_cache:
-        # 安全获取耗时数据，防止TypeError
+        # 安全获取耗时
         duration_str = st.session_state.task_summary.get('duration', '0s')
         if isinstance(duration_str, str) and len(duration_str) > 4:
             safe_duration = duration_str[:-4]
