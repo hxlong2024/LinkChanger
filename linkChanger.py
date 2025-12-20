@@ -51,11 +51,18 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# ⚓️ 顶部锚点 (这是“回到顶部”的目的地)
-st.markdown('<div id="top-anchor" style="position:absolute; top:-100px; visibility:hidden;"></div>', unsafe_allow_html=True)
+# ⚓️ 顶部锚点
+st.markdown('<div id="top-anchor" style="position:absolute; top:-50px; visibility:hidden;"></div>', unsafe_allow_html=True)
 
 st.markdown("""
     <style>
+    /* 🔥【关键修复】暴力减少顶部留白，让内容往上走 */
+    .block-container {
+        padding-top: 32px !important; /* 默认是 6rem，改小到 32px */
+        padding-bottom: 3rem;
+    }
+    
+    /* 其他样式保持不变 */
     .stTextArea textarea { font-family: 'Source Code Pro', monospace; font-size: 14px; }
     .success-text { color: #09ab3b; font-weight: bold; }
     .stStatusWidget { border: 1px solid #e0e0e0; border-radius: 8px; }
@@ -67,7 +74,7 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# 初始化状态 (防丢失核心)
+# 初始化状态
 if 'process_logs' not in st.session_state:
     st.session_state.process_logs = []
 if 'final_result_cache' not in st.session_state:
