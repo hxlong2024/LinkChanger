@@ -162,7 +162,6 @@ st.markdown("""
         font-size: 0.9em;
     }
 
-    /* 🟡 修复2：增加下边距，防止挨太近 */
     .result-box { 
         background: #fcfcfc; 
         border: 1px solid #eee; 
@@ -603,12 +602,11 @@ def worker_thread(job_id, input_text, quark_cookie, baidu_cookie, bark_key, push
 # ==========================================
 # 6. 主逻辑 (前端 UI)
 # ==========================================
-# 🟡 修复1：使用同步 Requests 进行检测，更稳定
 @st.cache_data(ttl=300) 
 def check_cookies_validity(q_c, b_c):
     status = {"quark": False, "baidu": False}
     
-    # 夸克检测 (使用 requests)
+    # 夸克检测 (使用 requests 同步检测)
     if q_c:
         try:
             headers = {
@@ -633,11 +631,14 @@ def check_cookies_validity(q_c, b_c):
     return status
 
 def check_password():
-    if "general" not in st.secrets or "app_password" not in st.secrets["general"]:
-        return True 
+    """🔒 密码校验逻辑 (支持为空免密)"""
+    # 获取密码，如果不存在则默认为空字符串
+    TARGET_PWD = get_secret("general", "app_password", "")
 
-    TARGET_PWD = st.secrets["general"]["app_password"]
-    
+    # 🟡 如果密码为空或只包含空格，直接放行 (免密模式)
+    if not TARGET_PWD or not TARGET_PWD.strip():
+        return True
+
     if "password_correct" not in st.session_state:
         st.session_state.password_correct = False
 
@@ -703,7 +704,7 @@ def main():
     current_job_id = query_params.get("job_id", None)
 
     if not current_job_id:
-        st.info("💡 提示：后台自动运行，任务开始后可切换网页或软件。")
+        st.info("💡 提示：后台自动运行，任务开始后可关闭网页。")
         input_text = st.text_area("📝 粘贴链接...", height=150, key="link_input")
         
         if st.button("🚀 开始转存", type="primary", use_container_width=True):
