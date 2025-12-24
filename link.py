@@ -605,15 +605,13 @@ def worker_thread(job_id, input_text, quark_cookie, baidu_cookie, bark_key, push
                         job_manager.add_log(job_id, f"登录成功: {user} (耗时: {get_time_diff(t0)})", "success")
                         t_root = time.time()
                         # 找到这一行（大约在 worker_thread 函数里）
-                         # root_fid = await q_engine.get_folder_id(QUARK_SAVE_PATH) 
-
-                         # 替换为 👇：
-                         root_fid = await q_engine.ensure_path(QUARK_SAVE_PATH)
-                         # 同时修改下面的判断日志（可选，为了逻辑通顺）：
-                         if not root_fid: 
+                        # root_fid = await q_engine.get_folder_id(QUARK_SAVE_PATH) 
+                        # 替换为 👇：
+                        root_fid = await q_engine.ensure_path(QUARK_SAVE_PATH)
+                        # 同时修改下面的判断日志（可选，为了逻辑通顺）：
+                        if not root_fid:
                             job_manager.add_log(job_id, f"目录创建失败: {QUARK_SAVE_PATH}", "error")
-                         else:# ... 继续执行
-
+                        else:# ... 继续执行
                             for match in q_matches:
                                 current_idx += 1
                                 raw_url = match.group(1)
