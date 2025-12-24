@@ -68,7 +68,7 @@ class JobManager:
         job_id = str(uuid.uuid4())[:8]
         self.jobs[job_id] = {
             "status": "running",
-            "logs": [], # 🟢 存纯文本列表
+            "logs": [],
             "result_text": "",
             "progress": {"current": 0, "total": 0},
             "created_at": datetime.now(),
@@ -80,12 +80,17 @@ class JobManager:
         return self.jobs.get(job_id)
 
     def add_log(self, job_id, message, type="info"):
-        """type参数保留但不再用于样式，仅做兼容"""
         if job_id in self.jobs:
             timestamp = (datetime.now(timezone.utc) + timedelta(hours=8)).strftime("%H:%M:%S")
-            # 🟢 回归纯文本格式，简单粗暴最稳定
-            log_entry = f"[{timestamp}] {message}"
-            self.jobs[job_id]["logs"].append(log_entry)
+            # 🟢 关键修改：不再存 HTML，只存纯数据
+            # 格式：(时间, 图标, 消息)
+            icon = "🔹"
+            if type == 'success': icon = "✅"
+            elif type == 'error': icon = "❌"
+            elif type == 'quark': icon = "☁️"
+            elif type == 'baidu': icon = "🐻"
+            
+            self.jobs[job_id]["logs"].append(f"`{timestamp}` {icon} {message}")
 
     def update_progress(self, job_id, current, total):
         if job_id in self.jobs:
@@ -109,50 +114,43 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# ⚓️ 顶部锚点
 st.markdown('<div id="top-anchor" style="position:absolute; top:-50px; visibility:hidden;"></div>', unsafe_allow_html=True)
 
+# 🟢 样式极大简化，删除所有导致崩溃的复杂 CSS
 st.markdown("""
     <style>
     .block-container { padding-top: 32px !important; padding-bottom: 3rem; }
-    .stTextArea textarea { font-family: 'Source Code Pro', monospace; font-size: 13px; }
+    .stTextArea textarea { font-family: 'Source Code Pro', monospace; font-size: 14px; }
     
-    .result-box { 
-        background: #fcfcfc; 
-        border: 1px solid #eee; 
-        padding: 15px; 
-        border-radius: 8px; 
-        margin-top: 20px; 
-        margin-bottom: 25px; 
-    }
+    /* 简单的状态点 */
+    .status-dot-green { color: #52c41a; font-weight: bold; }
+    .status-dot-red { color: #ff4d4f; font-weight: bold; }
+    .status-dot-gray { color: #d9d9d9; font-weight: bold; }
     
+    /* 运行中动画 */
     .running-badge { color: #0088ff; font-weight: bold; animation: pulse 1.5s infinite; }
     @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.4; } 100% { opacity: 1; } }
-    
-    /* 状态点样式 */
-    .status-dot-green { display:inline-block; width:8px; height:8px; background:#52c41a; border-radius:50%; margin-right:6px; }
-    .status-dot-red { display:inline-block; width:8px; height:8px; background:#ff4d4f; border-radius:50%; margin-right:6px; }
-    .status-dot-gray { display:inline-block; width:8px; height:8px; background:#d9d9d9; border-radius:50%; margin-right:6px; }
     
     /* 返回顶部按钮 */
     .back-to-top {
         position: fixed;
         bottom: 80px;
         right: 20px;
-        width: 40px;
-        height: 40px;
-        background-color: #333;
+        width: 45px;
+        height: 45px;
+        background-color: #ff4b4b;
         border-radius: 50%;
-        box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+        box-shadow: 0 4px 12px rgba(0,0,0,0.2);
         z-index: 999999;
-        text-decoration: none;
         display: flex;
         align-items: center;
         justify-content: center;
-        opacity: 0.6;
-        transition: opacity 0.3s;
+        text-decoration: none;
+        color: white;
+        font-size: 20px;
+        opacity: 0.8;
     }
-    .back-to-top:hover { opacity: 1; }
-    .back-to-top svg { width: 20px; height: 20px; stroke: white; }
     </style>
 """, unsafe_allow_html=True)
 
@@ -166,9 +164,9 @@ def create_copy_button_html(text_to_copy: str):
     safe_text = json.dumps(text_to_copy)[1:-1]
     return f"""
     <div style="margin-top: 10px;">
-        <button id="copyBtn" style="width:100%;padding:10px;cursor:pointer;background:#fff;border:1px solid #e0e0e0;border-radius:6px;font-weight:500;color:#333;transition:all 0.2s;" 
-        onclick="navigator.clipboard.writeText('{safe_text}').then(()=>{{let b=document.getElementById('copyBtn');b.innerText='✅ 已复制';b.style.color='#52c41a';setTimeout(()=>{{b.innerText='📋 复制结果';b.style.color='#333'}}, 2000)}})">
-        📋 复制结果
+        <button style="width:100%;padding:12px;background:#fff;border:1px solid #ddd;border-radius:8px;font-weight:bold;color:#333;cursor:pointer;" 
+        onclick="navigator.clipboard.writeText('{safe_text}').then(()=>{{this.innerText='✅ 已复制';this.style.color='green';setTimeout(()=>{{this.innerText='📋 一键复制结果';this.style.color='#333'}}, 2000)}})">
+        📋 一键复制结果
         </button>
     </div>
     """
@@ -647,18 +645,18 @@ def main():
         st.header("⚙️ 状态监控")
         
         if not q_c:
-            st.markdown('<span class="status-dot-gray"></span> 夸克: 未配置', unsafe_allow_html=True)
+            st.markdown('⚪ 夸克: <span class="status-dot-gray">未配置</span>', unsafe_allow_html=True)
         elif cookie_status["quark"]:
-            st.markdown('<span class="status-dot-green"></span> 夸克: <span style="color:#52c41a">有效</span>', unsafe_allow_html=True)
+            st.markdown('🟢 夸克: <span class="status-dot-green">有效</span>', unsafe_allow_html=True)
         else:
-            st.markdown('<span class="status-dot-red"></span> 夸克: <span style="color:#ff4d4f">已失效</span>', unsafe_allow_html=True)
+            st.markdown('🔴 夸克: <span class="status-dot-red">已失效</span>', unsafe_allow_html=True)
             
         if not b_c:
-            st.markdown('<span class="status-dot-gray"></span> 百度: 未配置', unsafe_allow_html=True)
+            st.markdown('⚪ 百度: <span class="status-dot-gray">未配置</span>', unsafe_allow_html=True)
         elif cookie_status["baidu"]:
-            st.markdown('<span class="status-dot-green"></span> 百度: <span style="color:#52c41a">有效</span>', unsafe_allow_html=True)
+            st.markdown('🟢 百度: <span class="status-dot-green">有效</span>', unsafe_allow_html=True)
         else:
-            st.markdown('<span class="status-dot-red"></span> 百度: <span style="color:#ff4d4f">已失效</span>', unsafe_allow_html=True)
+            st.markdown('🔴 百度: <span class="status-dot-red">已失效</span>', unsafe_allow_html=True)
 
         st.divider()
         
@@ -720,10 +718,17 @@ def main():
                 st.progress(prog['current'] / prog['total'], text=f"进度: {prog['current']} / {prog['total']}")
 
             with st.expander("📜 执行日志", expanded=True):
-                # 🟡 核心修复：使用纯文本 textarea 替代 HTML 渲染
-                # 将日志列表转换为字符串，每行一个
-                logs_text = "\n".join(job_data['logs'])
-                st.text_area("日志详情", value=logs_text, height=300, disabled=True, label_visibility="collapsed")
+                # 🟡 核心修复：使用纯文本 Markdown 渲染，彻底抛弃 HTML
+                # 这种方式在手机上渲染极快且稳定
+                log_lines = []
+                for log in job_data['logs']:
+                    log_lines.append(log)
+                
+                # 渲染为 Markdown 列表
+                if log_lines:
+                    st.markdown("\n\n".join(log_lines))
+                else:
+                    st.caption("暂无日志...")
 
             if status == "done":
                 res_text = job_data['result_text']
@@ -732,13 +737,8 @@ def main():
                 duration_str = str(summary.get('duration', '0s'))
                 safe_duration = duration_str[:-4] if len(duration_str) > 4 else duration_str
 
-                st.markdown(f"""
-                <div class="result-box">
-                    <p style="margin:0;color:#666">✅ 成功: <b>{summary.get('success', 0)}</b> / {summary.get('total', 0)} 
-                    &nbsp;|&nbsp; ⏱ 耗时: {safe_duration}</p>
-                </div>
-                <div style='height: 20px;'></div>
-                """, unsafe_allow_html=True)
+                # 🟡 修复：使用原生 st.success 替代 HTML div，防崩
+                st.success(f"✅ 成功: {summary.get('success', 0)} / {summary.get('total', 0)}  |  ⏱ 耗时: {safe_duration}")
                 
                 st.text_area("⬇️ 最终结果", value=res_text, height=200)
                 components.html(create_copy_button_html(res_text), height=80)
@@ -747,38 +747,11 @@ def main():
                     st.query_params.clear()
                     st.rerun()
             else:
-                # 🟡 增加刷新间隔到 3s，缓解手机渲染压力
                 time.sleep(3) 
                 st.rerun()
 
-st.markdown("""
-    <style>
-    .back-to-top {
-        position: fixed;
-        bottom: 80px;
-        right: 20px;
-        width: 40px;
-        height: 40px;
-        background-color: #333;
-        border-radius: 50%;
-        box-shadow: 0 2px 8px rgba(0,0,0,0.2);
-        z-index: 999999;
-        text-decoration: none;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        opacity: 0.6;
-        transition: opacity 0.3s;
-    }
-    .back-to-top:hover { opacity: 1; }
-    .back-to-top svg { width: 20px; height: 20px; stroke: white; }
-    </style>
-    <a href="#top-anchor" class="back-to-top" title="Top">
-        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2.5" stroke="currentColor">
-          <path stroke-linecap="round" stroke-linejoin="round" d="M4.5 10.5 12 3m0 0 7.5 7.5M12 3v18" />
-        </svg>
-    </a>
-""", unsafe_allow_html=True)
+# 返回顶部按钮 (纯 CSS 实现，不影响逻辑)
+st.markdown('<a href="#top-anchor" class="back-to-top" title="Top">⬆️</a>', unsafe_allow_html=True)
 
 if __name__ == "__main__":
     main()
