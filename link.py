@@ -103,7 +103,7 @@ job_manager = JobManager()
 # 2. 页面配置与样式
 # ==========================================
 st.set_page_config(
-    page_title="晴天网盘转存助手",
+    page_title="网盘转存助手",
     page_icon="📂",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -125,6 +125,8 @@ st.markdown("""
         border-radius: 8px;
         padding: 10px;
         background: #fff;
+        max-height: 350px; /* 🔥 限制最大高度，防止手机端渲染过长列表崩溃 */
+        overflow-y: auto;
     }
     .log-item {
         display: flex;
@@ -606,7 +608,6 @@ def worker_thread(job_id, input_text, quark_cookie, baidu_cookie, bark_key, push
 def check_cookies_validity(q_c, b_c):
     status = {"quark": False, "baidu": False}
     
-    # 夸克检测 (使用 requests 同步检测)
     if q_c:
         try:
             headers = {
@@ -621,7 +622,6 @@ def check_cookies_validity(q_c, b_c):
                 status["quark"] = True
         except: pass
         
-    # 百度检测
     if b_c:
         try:
             b_eng = BaiduEngine(b_c)
@@ -632,10 +632,8 @@ def check_cookies_validity(q_c, b_c):
 
 def check_password():
     """🔒 密码校验逻辑 (支持为空免密)"""
-    # 获取密码，如果不存在则默认为空字符串
     TARGET_PWD = get_secret("general", "app_password", "")
 
-    # 🟡 如果密码为空或只包含空格，直接放行 (免密模式)
     if not TARGET_PWD or not TARGET_PWD.strip():
         return True
 
@@ -665,7 +663,6 @@ def main():
     q_c = get_secret("quark", "cookie")
     b_c = get_secret("baidu", "cookie")
 
-    # 🟡 自动检测 Cookie 有效性
     cookie_status = check_cookies_validity(q_c, b_c)
 
     with st.sidebar:
@@ -704,7 +701,7 @@ def main():
     current_job_id = query_params.get("job_id", None)
 
     if not current_job_id:
-        st.info("💡 提示：尽可处理百度与夸克链接，后台自动运行，任务开始后可切换网页或软件。")
+        st.info("💡 提示：后台自动运行，任务开始后可关闭网页。")
         input_text = st.text_area("📝 粘贴链接...", height=150, key="link_input")
         
         if st.button("🚀 开始转存", type="primary", use_container_width=True):
@@ -745,7 +742,11 @@ def main():
                 st.progress(prog['current'] / prog['total'], text=f"进度: {prog['current']} / {prog['total']}")
 
             with st.expander("📜 执行日志", expanded=True):
-                st.markdown('<div class="log-container">', unsafe_allow_html=True)
+                # 🟡 占位符：用于稳定容器
+                log_placeholder = st.empty() 
+                
+                # 🟡 生成日志 HTML
+                log_html = '<div class="log-container">'
                 for log in job_data['logs']:
                     icon = "🔹"
                     if log['type'] == 'success': icon = '<span class="icon-success">✔</span>'
@@ -760,13 +761,16 @@ def main():
                         short_url = url[:40] + "..." if len(url) > 40 else url
                         msg_display = msg_display.replace(url, f'<span class="url-highlight">{short_url}</span>')
 
-                    st.markdown(f"""
+                    log_html += f"""
                     <div class="log-item">
                         <div class="log-time">{log['time']}</div>
                         <div>{icon} {msg_display}</div>
                     </div>
-                    """, unsafe_allow_html=True)
-                st.markdown('</div>', unsafe_allow_html=True)
+                    """
+                log_html += '</div>'
+                
+                # 🟡 一次性渲染整个日志块
+                log_placeholder.markdown(log_html, unsafe_allow_html=True)
 
             if status == "done":
                 res_text = job_data['result_text']
@@ -789,7 +793,8 @@ def main():
                     st.query_params.clear()
                     st.rerun()
             else:
-                time.sleep(2) 
+                # 🟡 修复：降低刷新频率到 3秒，防止手机端崩溃
+                time.sleep(3) 
                 st.rerun()
 
 st.markdown("""
