@@ -83,6 +83,7 @@ class JobManager:
     def add_log(self, job_id, message, type="info"):
         """type: info, success, error, quark, baidu"""
         if job_id in self.jobs:
+            # 获取东八区时间
             timestamp = (datetime.now(timezone.utc) + timedelta(hours=8)).strftime("%H:%M:%S")
             safe_message = html.escape(message)
             self.jobs[job_id]["logs"].append({"time": timestamp, "msg": safe_message, "type": type})
@@ -100,7 +101,7 @@ class JobManager:
 job_manager = JobManager()
 
 # ==========================================
-# 2. 页面配置与样式
+# 2. 页面配置与样式 (重点优化部分)
 # ==========================================
 st.set_page_config(
     page_title="网盘转存助手",
@@ -113,62 +114,108 @@ st.markdown('<div id="top-anchor" style="position:absolute; top:-50px; visibilit
 
 st.markdown("""
     <style>
+    /* 基础容器微调 */
     .block-container { padding-top: 32px !important; padding-bottom: 3rem; }
-    .stTextArea textarea { font-family: 'Source Code Pro', monospace; font-size: 14px; }
+    .stTextArea textarea { font-family: 'Source Code Pro', monospace; font-size: 14px; border-radius: 8px; }
     
+    /* 日志容器优化 */
     .log-container {
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-        font-size: 13px;
+        font-family: 'Menlo', 'Monaco', 'Courier New', monospace;
+        font-size: 12px;
         display: flex;
         flex-direction: column;
-        border: 1px solid #f0f0f0;
-        border-radius: 8px;
-        padding: 10px;
-        background: #fff;
+        border: 1px solid #e0e0e0;
+        border-radius: 10px;
+        padding: 0;
+        background: #fafafa;
+        overflow: hidden;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.05);
     }
+    
+    /* 单条日志 */
     .log-item {
         display: flex;
-        align-items: center;
-        padding: 6px 0;
-        border-bottom: 1px solid #f8f8f8;
+        align-items: flex-start; /* 顶部对齐 */
+        padding: 8px 12px;
+        border-bottom: 1px solid #f0f0f0;
+        line-height: 1.6;
+        transition: background 0.2s;
     }
+    .log-item:hover { background: #f0f7ff; }
     .log-item:last-child { border-bottom: none; }
     
+    /* 时间列 */
     .log-time {
-        color: #bbb;
-        font-size: 12px;
-        font-family: monospace;
+        color: #999;
+        font-size: 11px;
         margin-right: 12px;
-        min-width: 60px;
+        min-width: 58px;
+        text-align: right;
+        flex-shrink: 0;
+        padding-top: 1px;
     }
+    
+    /* 消息主体 */
     .log-msg {
-        color: #444;
-        word-break: break-all;
+        color: #333;
         flex-grow: 1;
+        word-wrap: break-word; /* 允许换行 */
+        min-width: 0; /* 防止flex子元素溢出 */
     }
     
-    .icon-success { color: #52c41a; margin-right: 6px; font-weight:bold; }
-    .icon-error { color: #ff4d4f; margin-right: 6px; font-weight:bold; }
-    .icon-quark { color: #1677ff; margin-right: 6px; font-weight:bold; }
-    .icon-baidu { color: #ff4d4f; margin-right: 6px; font-weight:bold; }
-    .icon-info { color: #8c8c8c; margin-right: 6px; font-weight:bold; }
-    
-    .url-highlight {
-        background: #f0f5ff;
-        color: #2f54eb;
-        padding: 2px 6px;
-        border-radius: 4px;
+    /* 智能链接缺省样式 */
+    .smart-link {
+        display: inline-block;
+        background: #e6f7ff;
+        color: #1890ff;
+        padding: 0 4px;
+        border-radius: 3px;
         font-family: monospace;
-        font-size: 0.9em;
+        border: 1px solid #bae7ff;
+        max-width: 180px; /* 移动端最大宽度 */
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis; /* 超出显示省略号 */
+        vertical-align: bottom;
+        font-size: 11px;
+        cursor: text;
+    }
+    
+    /* 进度标记 */
+    .step-badge {
+        display: inline-block;
+        background: #f0f0f0;
+        color: #666;
+        padding: 0 4px;
+        border-radius: 3px;
+        margin-right: 5px;
+        font-size: 10px;
+        font-weight: bold;
+    }
+    
+    /* 耗时标记 */
+    .time-badge {
+        color: #8c8c8c;
+        font-size: 10px;
+        margin-left: 5px;
     }
 
+    /* 图标颜色 */
+    .icon-success { color: #52c41a; font-weight:bold; margin-right: 4px; }
+    .icon-error { color: #ff4d4f; font-weight:bold; margin-right: 4px; }
+    .icon-quark { color: #1677ff; font-weight:bold; margin-right: 4px; }
+    .icon-baidu { color: #ff4d4f; font-weight:bold; margin-right: 4px; }
+    .icon-info { color: #8c8c8c; font-weight:bold; margin-right: 4px; }
+
+    /* 结果区域 */
     .result-box { 
-        background: #fcfcfc; 
-        border: 1px solid #eee; 
+        background: #fff; 
+        border: 1px solid #b7eb8f; 
         padding: 15px; 
         border-radius: 8px; 
         margin-top: 20px; 
         margin-bottom: 25px; 
+        background-color: #f6ffed;
     }
     
     .running-badge { color: #0088ff; font-weight: bold; animation: pulse 1.5s infinite; }
@@ -184,6 +231,28 @@ INVALID_CHARS_REGEX = re.compile(r'[^\u4e00-\u9fa5a-zA-Z0-9_\-\s]')
 def get_time_diff(start_time):
     diff = time.time() - start_time
     return f"{diff:.2f}s"
+
+# 智能缩短链接用于展示
+def smart_shorten_url(text):
+    # 正则查找URL
+    url_pattern = re.compile(r'(https?://[^\s]+)')
+    
+    def replace_func(match):
+        url = match.group(1)
+        # 提取域名和末尾关键字符
+        try:
+            domain = url.split('/')[2]
+            if "quark" in domain: domain = "夸克"
+            elif "baidu" in domain: domain = "百度"
+            
+            # 保留链接的最后8位用于识别
+            suffix = url[-8:] if len(url) > 20 else url[-5:]
+            short_text = f"{domain}...{suffix}"
+            return f'<span class="smart-link" title="{url}">{short_text}</span>'
+        except:
+            return f'<span class="smart-link" title="{url}">链接...</span>'
+
+    return url_pattern.sub(replace_func, text)
 
 def create_copy_button_html(text_to_copy: str):
     safe_text = json.dumps(text_to_copy)[1:-1]
@@ -510,18 +579,20 @@ def worker_thread(job_id, input_text, quark_cookie, baidu_cookie, bark_key, push
                     t0 = time.time()
                     user = await q_engine.check_login()
                     if not user: 
-                        job_manager.add_log(job_id, f"登录失败 ({get_time_diff(t0)})", "error")
+                        job_manager.add_log(job_id, f"登录失败 (耗时: {get_time_diff(t0)})", "error")
                     else:
-                        job_manager.add_log(job_id, f"登录成功: {user}", "success")
-                        t0 = time.time()
+                        job_manager.add_log(job_id, f"登录成功: {user} (耗时: {get_time_diff(t0)})", "success")
+                        t_root = time.time()
                         root_fid = await q_engine.get_folder_id(QUARK_SAVE_PATH)
                         if not root_fid: 
-                            job_manager.add_log(job_id, "目录不存在，尝试创建...", "error")
+                            job_manager.add_log(job_id, f"目录不存在，尝试创建 (耗时: {get_time_diff(t_root)})", "error")
                         else:
                             for match in q_matches:
                                 current_idx += 1
                                 raw_url = match.group(1)
-                                job_manager.add_log(job_id, f"处理中: {raw_url}", "quark")
+                                step_prefix = f"[{current_idx}/{total_tasks}]"
+                                
+                                job_manager.add_log(job_id, f"{step_prefix} 处理中: {raw_url}", "quark")
                                 job_manager.update_progress(job_id, current_idx, total_tasks)
                                 
                                 t_task = time.time()
@@ -529,17 +600,17 @@ def worker_thread(job_id, input_text, quark_cookie, baidu_cookie, bark_key, push
                                 t_task_end = get_time_diff(t_task)
                                 
                                 if new_url:
-                                    log_msg = f"转存成功 ({t_task_end})"
+                                    log_msg = f"{step_prefix} 转存成功: {new_url} (耗时: {t_task_end})"
                                     if FIXED_IMAGE_CONFIG['quark']['enabled'] and new_fid:
                                         t_img = time.time()
                                         res_url, res_msg, _ = await q_engine.process_url(FIXED_IMAGE_CONFIG['quark']['url'], new_fid, is_inject=True)
-                                        if res_url == "INJECT_OK": log_msg += f" + 图片植入"
+                                        if res_url == "INJECT_OK": log_msg += f" + 植入(耗时:{get_time_diff(t_img)})"
                                     
                                     job_manager.add_log(job_id, log_msg, "success")
                                     final_text = final_text.replace(raw_url, new_url)
                                     success_count += 1
                                 else:
-                                    job_manager.add_log(job_id, f"{msg} ({t_task_end})", "error")
+                                    job_manager.add_log(job_id, f"{step_prefix} {msg} (耗时: {t_task_end})", "error")
 
                                 await asyncio.sleep(random.uniform(2, 4))
 
@@ -551,9 +622,9 @@ def worker_thread(job_id, input_text, quark_cookie, baidu_cookie, bark_key, push
                     job_manager.add_log(job_id, "开始处理百度链接...", "baidu")
                     t0 = time.time()
                     if not b_engine.init_token(): 
-                        job_manager.add_log(job_id, f"登录失败 ({get_time_diff(t0)})", "error")
+                        job_manager.add_log(job_id, f"登录失败 (耗时: {get_time_diff(t0)})", "error")
                     else:
-                        job_manager.add_log(job_id, "登录成功", "success")
+                        job_manager.add_log(job_id, f"登录成功 (耗时: {get_time_diff(t0)})", "success")
                         if not b_engine.check_dir_exists(BAIDU_SAVE_PATH): b_engine.create_dir(BAIDU_SAVE_PATH)
                         
                         for match in b_matches:
@@ -561,8 +632,9 @@ def worker_thread(job_id, input_text, quark_cookie, baidu_cookie, bark_key, push
                             raw_url = match.group(1)
                             pwd_match = re.search(r'(?:\?pwd=|&pwd=|\s+|提取码[:：]?\s*)([a-zA-Z0-9]{4})', match.group(0))
                             pwd = pwd_match.group(1) if pwd_match else ""
+                            step_prefix = f"[{current_idx}/{total_tasks}]"
                             
-                            job_manager.add_log(job_id, f"处理中: {raw_url}", "baidu")
+                            job_manager.add_log(job_id, f"{step_prefix} 处理中: {raw_url}", "baidu")
                             job_manager.update_progress(job_id, current_idx, total_tasks)
                             
                             t_task = time.time()
@@ -571,17 +643,17 @@ def worker_thread(job_id, input_text, quark_cookie, baidu_cookie, bark_key, push
                             t_task_end = get_time_diff(t_task)
                             
                             if new_url:
-                                log_msg = f"转存成功 ({t_task_end})"
+                                log_msg = f"{step_prefix} 转存成功: {new_url} (耗时: {t_task_end})"
                                 if FIXED_IMAGE_CONFIG['baidu']['enabled'] and new_dir_path:
                                     t_img = time.time()
                                     img_res_url, img_msg, _ = b_engine.process_url({'url': FIXED_IMAGE_CONFIG['baidu']['url'], 'pwd': FIXED_IMAGE_CONFIG['baidu']['pwd']}, new_dir_path, is_inject=True)
-                                    if img_res_url == "INJECT_OK": log_msg += f" + 图片植入"
+                                    if img_res_url == "INJECT_OK": log_msg += f" + 植入(耗时:{get_time_diff(t_img)})"
 
                                 job_manager.add_log(job_id, log_msg, "success")
                                 final_text = final_text.replace(raw_url, new_url)
                                 success_count += 1
                             else:
-                                job_manager.add_log(job_id, f"{msg} ({t_task_end})", "error")
+                                job_manager.add_log(job_id, f"{step_prefix} {msg} (耗时: {t_task_end})", "error")
 
                             time.sleep(random.uniform(2, 4))
 
@@ -632,10 +704,8 @@ def check_cookies_validity(q_c, b_c):
 
 def check_password():
     """🔒 密码校验逻辑 (支持为空免密)"""
-    # 获取密码，如果不存在则默认为空字符串
     TARGET_PWD = get_secret("general", "app_password", "")
 
-    # 🟡 如果密码为空或只包含空格，直接放行 (免密模式)
     if not TARGET_PWD or not TARGET_PWD.strip():
         return True
 
@@ -747,23 +817,28 @@ def main():
             with st.expander("📜 执行日志", expanded=True):
                 st.markdown('<div class="log-container">', unsafe_allow_html=True)
                 for log in job_data['logs']:
+                    # 图标逻辑
                     icon = "🔹"
                     if log['type'] == 'success': icon = '<span class="icon-success">✔</span>'
                     elif log['type'] == 'error': icon = '<span class="icon-error">✖</span>'
                     elif log['type'] == 'quark': icon = '<span class="icon-quark">☁</span>'
                     elif log['type'] == 'baidu': icon = '<span class="icon-baidu">🐻</span>'
                     
+                    # 消息格式化：高亮进度与时间
                     msg_display = log['msg']
-                    url_match = re.search(r'(https?://[^\s]+)', msg_display)
-                    if url_match:
-                        url = url_match.group(1)
-                        short_url = url[:40] + "..." if len(url) > 40 else url
-                        msg_display = msg_display.replace(url, f'<span class="url-highlight">{short_url}</span>')
+                    
+                    # 替换进度 [1/10] 为徽章样式
+                    msg_display = re.sub(r'(\[\d+/\d+\])', r'<span class="step-badge">\1</span>', msg_display)
+                    # 替换耗时 (耗时: x.xxs) 为灰色小字
+                    msg_display = re.sub(r'(\(耗时:.*?\))', r'<span class="time-badge">\1</span>', msg_display)
+                    
+                    # 智能缩短链接（防止手机端换行）
+                    msg_display = smart_shorten_url(msg_display)
 
                     st.markdown(f"""
                     <div class="log-item">
                         <div class="log-time">{log['time']}</div>
-                        <div>{icon} {msg_display}</div>
+                        <div class="log-msg">{icon} {msg_display}</div>
                     </div>
                     """, unsafe_allow_html=True)
                 st.markdown('</div>', unsafe_allow_html=True)
@@ -777,12 +852,17 @@ def main():
 
                 st.markdown(f"""
                 <div class="result-box">
-                    <p style="margin:0;color:#666">✅ 成功: <b>{summary.get('success', 0)}</b> / {summary.get('total', 0)} 
-                    &nbsp;|&nbsp; ⏱ 耗时: {safe_duration}</p>
+                    <p style="margin:0;color:#389e0d;font-weight:bold;font-size:16px;">
+                        🎉 处理完成
+                    </p>
+                    <p style="margin-top:8px;color:#666;font-size:14px;">
+                        成功: <b style="color:#52c41a">{summary.get('success', 0)}</b> / {summary.get('total', 0)} 
+                        &nbsp;|&nbsp; ⏱ 总耗时: {safe_duration}
+                    </p>
                 </div>
                 """, unsafe_allow_html=True)
                 
-                st.text_area("⬇️ 最终结果", value=res_text, height=200)
+                st.text_area("⬇️ 最终结果 (可直接复制)", value=res_text, height=200)
                 components.html(create_copy_button_html(res_text), height=80)
                 
                 if st.button("🗑️ 开始新任务", use_container_width=True):
