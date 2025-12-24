@@ -28,16 +28,20 @@ def get_secret(section, key, default=""):
     except: pass
     return default
 
+# 🔄 动态初始化配置：有链接才启用，没有则禁用
+q_img_url = get_secret("quark", "img_url")
+b_img_url = get_secret("baidu", "img_url")
+
 FIXED_IMAGE_CONFIG = {
     "quark": {
-        "url": get_secret("quark", "img_url"),
-        "enabled": False 
+        "url": q_img_url,
+        "enabled": bool(q_img_url and q_img_url.strip()) # 只有链接不为空才启用
     },
     "baidu": {
-        "url": get_secret("baidu", "img_url"),
+        "url": b_img_url,
         "pwd": get_secret("baidu", "img_pwd"),
         "name": get_secret("baidu", "img_name", "公众号关注.jpg"),
-        "enabled": False
+        "enabled": bool(b_img_url and b_img_url.strip()) # 只有链接不为空才启用
     }
 }
 
@@ -53,7 +57,7 @@ class JobManager:
         self.jobs = {} 
 
     def _cleanup_old_jobs(self):
-        """🧹 自动清理超过 24 小时的旧任务，防止内存溢出"""
+        """🧹 自动清理超过 24 小时的旧任务"""
         now = datetime.now()
         expired_ids = [jid for jid, job in self.jobs.items() 
                        if (now - job['created_at']).total_seconds() > 86400]
@@ -80,7 +84,6 @@ class JobManager:
         """type: info, success, error, quark, baidu"""
         if job_id in self.jobs:
             timestamp = (datetime.now(timezone.utc) + timedelta(hours=8)).strftime("%H:%M:%S")
-            # 存入结构化数据，方便前端渲染
             self.jobs[job_id]["logs"].append({"time": timestamp, "msg": message, "type": type})
 
     def update_progress(self, job_id, current, total):
@@ -148,6 +151,7 @@ st.markdown("""
     .log-type-error { border-left-color: #ff4b4b; background: #fff1f0; }
     .log-type-quark { border-left-color: #0088ff; background: #e6f7ff; }
     .log-type-baidu { border-left-color: #ff4d4f; background: #fff1f0; }
+    .log-type-info { border-left-color: #888; background: #f8f9fa; }
     
     .result-box { border: 2px solid #e6f4ea; padding: 15px; border-radius: 10px; background-color: #f9fdfa; margin-top: 20px; }
     .running-badge { color: #0088ff; font-weight: bold; animation: pulse 1.5s infinite; }
@@ -202,17 +206,14 @@ def extract_smart_folder_name(full_text: str, match_start: int) -> str:
         return f"Res_{int(time.time())}" 
     return final_name[:50]
 
-# 🆕 全能推送函数 (Bark + PushDeer)
+# 推送函数
 def send_notification(bark_key, pushdeer_key, title, body):
-    # Bark (iOS)
     if bark_key:
         encoded_title = quote(title)
         encoded_body = quote(body)
         url = f"https://api.day.app/{bark_key}/{encoded_title}/{encoded_body}?icon=https://cdn-icons-png.flaticon.com/512/2991/2991110.png"
         try: requests.get(url, timeout=5)
         except: pass
-    
-    # PushDeer (Android/iOS)
     if pushdeer_key:
         url = "https://api2.pushdeer.com/message/push"
         params = {"pushkey": pushdeer_key, "text": title, "desp": body, "type": "markdown"}
@@ -633,8 +634,20 @@ def main():
         if q_c: st.success(f"☁️ 夸克已配置")
         else: st.error("☁️ 夸克未配置")
         
+        # 🆕 图片植入状态
+        if FIXED_IMAGE_CONFIG['quark']['enabled']:
+            st.success("🖼️ 夸克图片植入已启用")
+        else:
+            st.caption("⚪ 夸克图片植入未配置")
+        
         if b_c: st.success(f"🐻 百度已配置")
         else: st.error("🐻 百度未配置")
+        
+        # 🆕 图片植入状态
+        if FIXED_IMAGE_CONFIG['baidu']['enabled']:
+            st.success("🖼️ 百度图片植入已启用")
+        else:
+            st.caption("⚪ 百度图片植入未配置")
         
         st.divider()
         if bark_key or pushdeer_key:
