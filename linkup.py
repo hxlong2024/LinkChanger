@@ -29,9 +29,10 @@ st.set_page_config(
 # 保存路径常量
 QUARK_SAVE_PATH = "来自：分享/LinkChanger"
 BAIDU_SAVE_PATH = "/我的资源/LinkChanger"
+INVALID_CHARS_REGEX = re.compile(r'[^\u4e00-\u9fa5a-zA-Z0-9_\-\s]')
 
 # ==========================================
-# 1. 核心：后台任务管理器 (保持不变)
+# 1. 核心：后台任务管理器
 # ==========================================
 @st.cache_resource
 class JobManager:
@@ -80,7 +81,7 @@ class JobManager:
 job_manager = JobManager()
 
 # ==========================================
-# 2. 样式与工具函数 (保持不变)
+# 2. 页面样式与工具函数 (已找回丢失的逻辑)
 # ==========================================
 st.markdown('<div id="top-anchor" style="position:absolute; top:-50px; visibility:hidden;"></div>', unsafe_allow_html=True)
 
@@ -88,6 +89,7 @@ st.markdown("""
     <style>
     .block-container { padding-top: 32px !important; padding-bottom: 3rem; }
     .stTextArea textarea { font-family: 'Source Code Pro', monospace; font-size: 14px; border-radius: 8px; }
+    
     .log-container {
         font-family: 'Menlo', 'Monaco', 'Courier New', monospace; font-size: 12px;
         display: flex; flex-direction: column; border: 1px solid #e0e0e0;
@@ -102,6 +104,7 @@ st.markdown("""
     .log-item:last-child { border-bottom: none; }
     .log-time { color: #999; font-size: 11px; margin-right: 12px; min-width: 58px; text-align: right; flex-shrink: 0; padding-top: 1px; }
     .log-msg { color: #333; flex-grow: 1; word-wrap: break-word; min-width: 0; }
+    
     .smart-link {
         display: inline-block; background: #e6f7ff; color: #1890ff; padding: 0 4px;
         border-radius: 3px; font-family: monospace; border: 1px solid #bae7ff;
@@ -114,6 +117,7 @@ st.markdown("""
     .icon-error { color: #ff4d4f; font-weight:bold; margin-right: 4px; }
     .icon-quark { color: #1677ff; font-weight:bold; margin-right: 4px; }
     .icon-baidu { color: #ff4d4f; font-weight:bold; margin-right: 4px; }
+    
     .result-box { background: #f6ffed; border: 1px solid #b7eb8f; padding: 15px; border-radius: 8px; margin-top: 20px; margin-bottom: 25px; }
     .running-badge { color: #0088ff; font-weight: bold; animation: pulse 1.5s infinite; }
     @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.4; } 100% { opacity: 1; } }
@@ -122,8 +126,6 @@ st.markdown("""
     .status-dot-gray { display:inline-block; width:8px; height:8px; background:#d9d9d9; border-radius:50%; margin-right:6px; }
     </style>
 """, unsafe_allow_html=True)
-
-INVALID_CHARS_REGEX = re.compile(r'[^\u4e00-\u9fa5a-zA-Z0-9_\-\s]')
 
 def get_time_diff(start_time):
     diff = time.time() - start_time
@@ -161,6 +163,7 @@ def sanitize_filename(name: str) -> str:
     clean_name = INVALID_CHARS_REGEX.sub('', name)
     return re.sub(r'\s+', ' ', clean_name).strip()
 
+# 📝 [找回] 智能文件夹命名逻辑
 def extract_smart_folder_name(full_text: str, match_start: int) -> str:
     lookback_limit = max(0, match_start - 200)
     pre_text = full_text[lookback_limit:match_start]
@@ -169,11 +172,15 @@ def extract_smart_folder_name(full_text: str, match_start: int) -> str:
     for line in reversed(lines):
         clean_line = line.strip()
         if not clean_line: continue
-        if re.match(r'^(百度|链接|提取码|:|：|https?|夸克|pwd|code)*$', clean_line, re.IGNORECASE): continue
+        if re.match(r'^(百度|链接|提取码|:|：|https?|夸克|pwd|code)*$', clean_line, re.IGNORECASE):
+            continue
         clean_line = re.sub(r'(百度|链接|提取码|:|：|pwd|夸克).*$', '', clean_line, flags=re.IGNORECASE).strip()
-        if clean_line: candidate_name = clean_line; break
+        if clean_line:
+            candidate_name = clean_line
+            break
     final_name = sanitize_filename(candidate_name)
-    if not final_name or len(final_name) < 2: return f"Res_{int(time.time())}" 
+    if not final_name or len(final_name) < 2:
+        return f"Res_{int(time.time())}" 
     return final_name[:50]
 
 def send_notification(bark_key, pushdeer_key, title, body):
@@ -188,7 +195,7 @@ def send_notification(bark_key, pushdeer_key, title, body):
         except: pass
 
 # ==========================================
-# 3. 引擎类 (已包含广告缓存优化)
+# 3. 引擎类 (夸克 & 百度 - 含广告缓存)
 # ==========================================
 class QuarkEngine:
     def __init__(self, cookies: str):
@@ -197,8 +204,7 @@ class QuarkEngine:
             'cookie': cookies, 'origin': 'https://pan.quark.cn', 'referer': 'https://pan.quark.cn/',
         }
         self.client = httpx.AsyncClient(timeout=45.0, headers=self.headers, follow_redirects=True)
-        # 🚀 广告缓存
-        self.inject_cache = None
+        self.inject_cache = None 
 
     async def close(self): await self.client.aclose()
     def _params(self): return {'pr': 'ucpro', 'fr': 'pc', '__dt': random.randint(100, 9999), '__t': int(time.time() * 1000)}
@@ -230,7 +236,6 @@ class QuarkEngine:
         return curr_id
 
     async def process_url(self, url: str, target_fid: str, is_inject: bool = False):
-        # 🚀 缓存逻辑
         if is_inject and self.inject_cache:
             source_fids = self.inject_cache['fids']
             source_tokens = self.inject_cache['tokens']
@@ -281,8 +286,7 @@ class QuarkEngine:
 
         await asyncio.sleep(1.5)
         new_fid = None
-        params = self._params()
-        params.update({'pdir_fid': target_fid, '_page': 1, '_size': 20, '_sort': 'updated_at:desc'})
+        params = self._params(); params.update({'pdir_fid': target_fid, '_page': 1, '_size': 20, '_sort': 'updated_at:desc'})
         try:
             r = await self.client.get('https://drive-pc.quark.cn/1/clouddrive/file/sort', params=params)
             for item in r.json().get('data', {}).get('list', []):
@@ -290,14 +294,11 @@ class QuarkEngine:
             if not new_fid and r.json().get('data', {}).get('list'): new_fid = r.json()['data']['list'][0]['fid']
         except: pass
         
-        if not new_fid: return None, "✅ 已存入网盘 (但无法获取文件ID，未分享)", None
-
+        if not new_fid: return None, "已存入但无法分享", None
         share_data = {"fid_list": [new_fid], "title": first_name, "url_type": 1, "expired_type": 1}
         try:
             r = await self.client.post("https://drive-pc.quark.cn/1/clouddrive/share", json=share_data, params=self._params())
-            res = r.json()
-            if res.get('code') != 0 and res.get('code') != 'OK': return None, f"✅ 已存入网盘 (但分享被拦截: {res.get('message')})", None
-            share_task_id = res.get('data', {}).get('task_id')
+            share_task_id = r.json().get('data', {}).get('task_id')
             await asyncio.sleep(0.5)
             params = self._params(); params.update({'task_id': share_task_id, 'retry_index': 0})
             r = await self.client.get("https://drive-pc.quark.cn/1/clouddrive/task", params=params)
@@ -311,37 +312,33 @@ class BaiduEngine:
         self.s = requests.Session()
         self.headers = {'User-Agent': 'Mozilla/5.0', 'Referer': 'https://pan.baidu.com', 'Cookie': "".join(cookies.split())}
         self.bdstoken = ''
-        self.inject_cache = None # 🚀 广告缓存
+        self.inject_cache = None 
         requests.packages.urllib3.disable_warnings()
 
-    def update_cookie_bdclnd(self, bdclnd):
-        current = dict(i.split('=', 1) for i in self.headers['Cookie'].split(';') if '=' in i)
-        current['BDCLND'] = bdclnd
-        self.headers['Cookie'] = ';'.join([f'{k}={v}' for k,v in current.items()])
+    def update_cookie(self, bdclnd):
+        self.headers['Cookie'] += f'; BDCLND={bdclnd}'
 
     @retry(stop_max_attempt_number=2)
     def init_token(self):
-        url = 'https://pan.baidu.com/api/gettemplatevariable'
-        r = self.s.get(url, params={'fields': '["bdstoken","token","uk","isdocuser"]'}, headers=self.headers, verify=False)
-        if r.json().get('errno') == 0: self.bdstoken = r.json()['result']['bdstoken']; return True
+        try:
+            r = self.s.get('https://pan.baidu.com/api/gettemplatevariable', params={'fields': '["bdstoken","token","uk","isdocuser"]'}, headers=self.headers, verify=False)
+            if r.json().get('errno') == 0: self.bdstoken = r.json()['result']['bdstoken']; return True
+        except: pass
         return False
 
     def check_dir_exists(self, path):
-        if not path.startswith("/"): path = "/" + path
         try:
             r = self.s.get('https://pan.baidu.com/api/list', params={'dir': path, 'bdstoken': self.bdstoken, 'start': 0, 'limit': 1}, headers=self.headers, verify=False)
             return r.json().get('errno') == 0
         except: return False
 
     def create_dir(self, path):
-        if not path.startswith("/"): path = "/" + path
         try:
             self.s.post('https://pan.baidu.com/api/create', params={'a': 'commit', 'bdstoken': self.bdstoken}, 
                         data={'path': path, 'isdir': 1, 'block_list': '[]'}, headers=self.headers, verify=False)
         except: pass
 
     def process_url(self, url_info: dict, root_path: str, is_inject: bool = False):
-        # 🚀 缓存逻辑
         if is_inject and self.inject_cache:
             shareid = self.inject_cache['shareid']
             uk = self.inject_cache['uk']
@@ -350,31 +347,28 @@ class BaiduEngine:
             try:
                 url, pwd = url_info['url'], url_info['pwd']
                 clean_url = url.split('?')[0]
-                folder_name = url_info.get('name', 'Temp')
-
                 if pwd:
                     surl = re.search(r'(?:surl=|/s/1|/s/)([\w\-]+)', clean_url)
                     if not surl: return None, "URL格式错误", None
                     r = self.s.post('https://pan.baidu.com/share/verify', params={'surl': surl.group(1), 't': int(time.time()*1000), 'bdstoken': self.bdstoken, 'channel': 'chunlei', 'web': 1, 'clienttype': 0}, data={'pwd': pwd, 'vcode': '', 'vcode_str': ''}, headers=self.headers, verify=False)
-                    if r.json()['errno'] == 0: self.update_cookie_bdclnd(r.json()['randsk'])
+                    if r.json()['errno'] == 0: self.update_cookie(r.json()['randsk'])
                     else: return None, "提取码错误", None
 
                 content = self.s.get(clean_url, headers=self.headers, verify=False).text
-                try:
-                    shareid = re.search(r'"shareid":(\d+?),', content).group(1)
-                    uk = re.search(r'"share_uk":"(\d+?)",', content).group(1)
-                    fs_id_list = re.findall(r'"fs_id":(\d+?),', content)
-                    if not fs_id_list: return None, "无文件", None
-                    fs_id_list_str = f"[{','.join(fs_id_list)}]"
-                    
-                    if is_inject:
-                        self.inject_cache = {'shareid': shareid, 'uk': uk, 'fsidlist': fs_id_list_str}
-                except: return None, "页面解析失败", None
+                shareid = re.search(r'"shareid":(\d+?),', content).group(1)
+                uk = re.search(r'"share_uk":"(\d+?)",', content).group(1)
+                fs_id_list = re.findall(r'"fs_id":(\d+?),', content)
+                if not fs_id_list: return None, "无文件", None
+                fs_id_list_str = f"[{','.join(fs_id_list)}]"
+                
+                if is_inject:
+                    self.inject_cache = {'shareid': shareid, 'uk': uk, 'fsidlist': fs_id_list_str}
             except Exception as e: return None, f"异常: {str(e)[:20]}", None
 
         try:
             if is_inject: save_path = root_path
             else:
+                folder_name = url_info.get('name', 'Res')
                 safe_suffix = ''.join(random.choices(string.ascii_letters + string.digits, k=4))
                 final_folder = f"{folder_name}_{safe_suffix}"
                 save_path = f"{root_path}/{final_folder}"
@@ -407,7 +401,7 @@ class BaiduEngine:
         except Exception as e: return None, f"发生异常: {str(e)[:20]}...", None
 
 # ==========================================
-# 5. 核心：后台线程 Worker (修改：接收动态配置)
+# 5. 核心：后台线程 Worker (接收动态配置)
 # ==========================================
 def worker_thread(job_id, input_text, quark_cookie, baidu_cookie, bark_key, pushdeer_key, inject_config):
     async def async_worker():
@@ -431,7 +425,7 @@ def worker_thread(job_id, input_text, quark_cookie, baidu_cookie, bark_key, push
             if q_matches:
                 if not quark_cookie: job_manager.add_log(job_id, "夸克：未配置Cookie，跳过", "error")
                 else:
-                    job_manager.add_log(job_id, "开始处理夸克链接...", "quark")
+                    job_manager.add_log(job_id, "开始处理夸克...", "quark")
                     t0 = time.time()
                     user = await q_engine.check_login()
                     if not user: job_manager.add_log(job_id, f"登录失败 (耗时: {get_time_diff(t0)})", "error")
@@ -439,7 +433,7 @@ def worker_thread(job_id, input_text, quark_cookie, baidu_cookie, bark_key, push
                         job_manager.add_log(job_id, f"登录成功: {user} (耗时: {get_time_diff(t0)})", "success")
                         t_root = time.time()
                         root_fid = await q_engine.get_folder_id(QUARK_SAVE_PATH)
-                        if not root_fid: job_manager.add_log(job_id, f"目录不存在 (耗时: {get_time_diff(t_root)})", "error")
+                        if not root_fid: job_manager.add_log(job_id, "目录不存在", "error")
                         else:
                             for match in q_matches:
                                 current_idx += 1; raw_url = match.group(1); step_prefix = f"[{current_idx}/{total_tasks}]"
@@ -452,7 +446,6 @@ def worker_thread(job_id, input_text, quark_cookie, baidu_cookie, bark_key, push
                                 
                                 if new_url:
                                     log_msg = f"{step_prefix} 转存成功: {new_url} (耗时: {t_task_end})"
-                                    # 🚀 使用 inject_config 而不是全局变量
                                     if inject_config['quark']['enabled'] and new_fid:
                                         t_img = time.time()
                                         res_url, res_msg, _ = await q_engine.process_url(inject_config['quark']['url'], new_fid, is_inject=True)
@@ -469,7 +462,7 @@ def worker_thread(job_id, input_text, quark_cookie, baidu_cookie, bark_key, push
             if b_matches:
                 if not baidu_cookie: job_manager.add_log(job_id, "百度：未配置Cookie，跳过", "error")
                 else:
-                    job_manager.add_log(job_id, "开始处理百度链接...", "baidu")
+                    job_manager.add_log(job_id, "开始处理百度...", "baidu")
                     t0 = time.time()
                     if not b_engine.init_token(): job_manager.add_log(job_id, f"登录失败 (耗时: {get_time_diff(t0)})", "error")
                     else:
@@ -491,7 +484,6 @@ def worker_thread(job_id, input_text, quark_cookie, baidu_cookie, bark_key, push
                             
                             if new_url:
                                 log_msg = f"{step_prefix} 转存成功: {new_url} (耗时: {t_task_end})"
-                                # 🚀 使用 inject_config
                                 if inject_config['baidu']['enabled'] and new_dir_path:
                                     t_img = time.time()
                                     img_res_url, img_msg, _ = b_engine.process_url({'url': inject_config['baidu']['url'], 'pwd': inject_config['baidu']['pwd']}, new_dir_path, is_inject=True)
@@ -518,7 +510,7 @@ def worker_thread(job_id, input_text, quark_cookie, baidu_cookie, bark_key, push
     asyncio.run(async_worker())
 
 # ==========================================
-# 6. 主逻辑 (前端 UI - 多用户版)
+# 6. 主逻辑 (多用户版 - 已修复变量名错误)
 # ==========================================
 @st.cache_data(ttl=300) 
 def check_cookies_validity(q_c, b_c):
@@ -548,21 +540,27 @@ def main():
     uid = query_params.get("uid", None)
     job_id = query_params.get("job_id", None)
 
-    # 🛑 界面 1: 链接里没有 UID (游客模式)
+    # 🛑 界面 1: 没有 UID (游客模式)
     if not uid:
-        st.title("☁️ 网盘转存助手")
-        st.info("👋 欢迎！此为内部私有工具。")
-        st.warning("⚠️ **访问受限**：检测到您未携带 **身份令牌 (UID)**。\n\n请使用管理员下发的 **专属链接** (例如 `?uid=xxx`) 进行访问。")
-        st.caption("如果您是管理员，请在 Secrets 中配置用户列表。")
+        st.markdown("<br>", unsafe_allow_html=True)
+        col1, col2, col3 = st.columns([1,2,1])
+        with col2:
+            st.title("☁️ 网盘转存助手")
+            st.info("👋 欢迎！此为内部私有工具。")
+            st.warning("⚠️ **访问受限**：检测到您未携带 **身份令牌 (UID)**。\n\n请使用管理员下发的 **专属链接** (例如 `?uid=xxx`) 进行访问。")
+            st.caption("如果您是管理员，请在后台 Secrets 中配置用户列表。")
         st.stop()
 
-    # 🛑 界面 2: 链接里的 UID 错误 (非法访问)
+    # 🛑 界面 2: UID 错误 (非法访问)
     user_data = get_user_from_secrets(uid)
     if not user_data:
-        st.title("🚫 访问拒绝")
-        st.error(f"**错误：无效的身份令牌**")
-        st.markdown(f"系统无法识别用户 ID: `{uid}`")
-        st.markdown("请联系管理员核实您的链接是否完整。")
+        st.markdown("<br>", unsafe_allow_html=True)
+        col1, col2, col3 = st.columns([1,2,1])
+        with col2:
+            st.title("🚫 访问拒绝")
+            st.error(f"**错误：无效的身份令牌**")
+            st.markdown(f"系统无法识别用户 ID: `{uid}`")
+            st.markdown("请联系管理员核实您的链接是否完整。")
         st.stop()
 
     # ✅ 界面 3: 正常登录 (读取用户配置)
@@ -572,14 +570,9 @@ def main():
     bark_key = user_data.get('bark', '')
     pushdeer_key = user_data.get('pushdeer', '')
     
-    # 构建用户专属的植入配置
-    user_q_img = user_data.get('q_img', '')
-    user_b_img = user_data.get('b_img', '')
-    user_b_pwd = user_data.get('b_pwd', '')
-    
     inject_config = {
-        "quark": {"url": user_q_img, "enabled": bool(user_q_img)},
-        "baidu": {"url": user_b_img, "pwd": user_b_pwd, "enabled": bool(user_b_img)}
+        "quark": {"url": user_data.get('q_img', ''), "enabled": bool(user_data.get('q_img', ''))},
+        "baidu": {"url": user_data.get('b_img', ''), "pwd": user_data.get('b_pwd', ''), "enabled": bool(user_data.get('b_img', ''))}
     }
 
     st.title(f"网盘转存助手 - {current_name}")
@@ -598,10 +591,8 @@ def main():
         st.divider()
         if inject_config['quark']['enabled']: st.success("🖼️ 夸克植入: 开启")
         else: st.caption("⚪ 夸克植入: 关闭")
-        
         if inject_config['baidu']['enabled']: st.success("🖼️ 百度植入: 开启")
         else: st.caption("⚪ 百度植入: 关闭")
-        
         if bark_key or pushdeer_key: st.info("📢 消息推送: 开启")
 
     if not job_id:
@@ -614,27 +605,27 @@ def main():
                  st.error("❌ 所有账号 Cookie 均已失效，请联系管理员更新。"); return
 
             new_job_id = job_manager.create_job()
-            # 🚀 传入用户配置
             t = threading.Thread(target=worker_thread, args=(new_job_id, input_text, q_c, b_c, bark_key, pushdeer_key, inject_config))
             t.start()
             
             st.query_params["job_id"] = new_job_id
-            st.query_params["uid"] = uid # 保持UID
+            st.query_params["uid"] = uid 
             st.rerun()
 
     else:
-        job_data = job_manager.get_job(current_job_id)
+        # 🟢 修复点：正确使用 job_id 变量
+        job_data = job_manager.get_job(job_id)
         if not job_data:
             st.error("❌ 任务不存在或已过期")
             if st.button("🔙 返回"):
-                st.query_params["uid"] = uid # 保持UID
-                del st.query_params["job_id"]
+                st.query_params["uid"] = uid 
+                if "job_id" in st.query_params: del st.query_params["job_id"]
                 st.rerun()
         else:
             status = job_data['status']
             if status == "running":
                 st.markdown(f"### 🔄 运行中... <span class='running-badge'>RUNNING</span>", unsafe_allow_html=True)
-                st.caption(f"ID: `{current_job_id}`")
+                st.caption(f"ID: `{job_id}`") # 🟢 修复点
             else: st.markdown("### ✅ 已完成")
 
             prog = job_data['progress']
@@ -674,8 +665,8 @@ def main():
                 components.html(create_copy_button_html(res_text), height=80)
                 
                 if st.button("🗑️ 开始新任务", use_container_width=True):
-                    st.query_params["uid"] = uid # 保持UID
-                    del st.query_params["job_id"]
+                    st.query_params["uid"] = uid 
+                    if "job_id" in st.query_params: del st.query_params["job_id"]
                     st.rerun()
             else:
                 time.sleep(2); st.rerun()
