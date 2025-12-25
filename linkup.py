@@ -318,16 +318,24 @@ class QuarkEngine:
 class BaiduEngine:
     def __init__(self, cookies: str):
         self.s = requests.Session()
+        # 调试：打印 Cookie 前10位，确认是否传入
+        print(f"\n[BaiduEngine] 初始化... Cookie长度: {len(cookies) if cookies else 0}")
+        if cookies:
+            print(f"[BaiduEngine] Cookie前缀: {cookies[:20]}...")
+        else:
+            print("[BaiduEngine] ❌ 警告：Cookie 为空！")
+
         self.headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36',
             'Referer': 'https://pan.baidu.com',
-            'Cookie': "".join(cookies.split())
+            'Cookie': "".join(cookies.split()) if cookies else ""
         }
         self.bdstoken = ''
         self.inject_cache = None
         requests.packages.urllib3.disable_warnings()
 
     def update_cookie_bdclnd(self, bdclnd):
+        print(f"[BaiduEngine] 更新 BDCLND: {bdclnd}")
         current = dict(i.split('=', 1) for i in self.headers['Cookie'].split(';') if '=' in i)
         current['BDCLND'] = bdclnd
         self.headers['Cookie'] = ';'.join([f'{k}={v}' for k,v in current.items()])
@@ -335,31 +343,49 @@ class BaiduEngine:
     @retry(stop_max_attempt_number=2)
     def init_token(self):
         url = 'https://pan.baidu.com/api/gettemplatevariable'
-        r = self.s.get(url, params={'fields': '["bdstoken","token","uk","isdocuser"]'}, headers=self.headers, verify=False)
-        if r.json().get('errno') == 0:
-            self.bdstoken = r.json()['result']['bdstoken']
-            return True
-        return False
+        print("[BaiduEngine] 正在获取 Token...")
+        try:
+            r = self.s.get(url, params={'fields': '["bdstoken","token","uk","isdocuser"]'}, headers=self.headers, verify=False)
+            res = r.json()
+            print(f"[BaiduEngine] Token 响应: {str(res)[:100]}...") # 只打前100字防止刷屏
+            if res.get('errno') == 0:
+                self.bdstoken = res['result']['bdstoken']
+                print(f"[BaiduEngine] ✅ 获取 Token 成功: {self.bdstoken}")
+                return True
+            print(f"[BaiduEngine] ❌ 获取 Token 失败: errno={res.get('errno')}")
+            return False
+        except Exception as e:
+            print(f"[BaiduEngine] ❌ init_token 异常: {e}")
+            return False
 
     def check_dir_exists(self, path):
         if not path.startswith("/"): path = "/" + path
         try:
             r = self.s.get('https://pan.baidu.com/api/list', params={'dir': path, 'bdstoken': self.bdstoken, 'start': 0, 'limit': 1}, headers=self.headers, verify=False)
-            return r.json().get('errno') == 0
+            exists = r.json().get('errno') == 0
+            print(f"[BaiduEngine] 检查目录 [{path}] 存在: {exists}")
+            return exists
         except: return False
 
     def create_dir(self, path):
         if not path.startswith("/"): path = "/" + path
+        print(f"[BaiduEngine] 尝试创建目录: {path}")
         try:
-            self.s.post('https://pan.baidu.com/api/create', params={'a': 'commit', 'bdstoken': self.bdstoken}, 
+            res = self.s.post('https://pan.baidu.com/api/create', params={'a': 'commit', 'bdstoken': self.bdstoken}, 
                         data={'path': path, 'isdir': 1, 'block_list': '[]'}, headers=self.headers, verify=False)
-        except: pass
+            print(f"[BaiduEngine] 创建目录响应: {res.json()}")
+        except Exception as e: 
+            print(f"[BaiduEngine] 创建目录异常: {e}")
 
     def process_url(self, url_info: dict, root_path: str, is_inject: bool = False):
+        print(f"\n--- [BaiduEngine] 开始处理 URL: {url_info.get('url')} ---")
+        
+        # 缓存逻辑
         if is_inject and self.inject_cache:
             shareid = self.inject_cache['shareid']
             uk = self.inject_cache['uk']
             fs_id_list_str = self.inject_cache['fsidlist'] 
+            print("[BaiduEngine] 使用缓存数据植入")
         else:
             try:
                 url = url_info['url']
@@ -370,21 +396,30 @@ class BaiduEngine:
                 if pwd:
                     surl = re.search(r'(?:surl=|/s/1|/s/)([\w\-]+)', clean_url)
                     if not surl: return None, "URL格式错误", None
+                    print(f"[BaiduEngine] 验证提取码: {pwd} surl: {surl.group(1)}")
                     r = self.s.post('https://pan.baidu.com/share/verify', 
                                     params={'surl': surl.group(1), 't': int(time.time()*1000), 'bdstoken': self.bdstoken, 'channel': 'chunlei', 'web': 1, 'clienttype': 0},
                                     data={'pwd': pwd, 'vcode': '', 'vcode_str': ''}, headers=self.headers, verify=False)
+                    print(f"[BaiduEngine] 验证结果: {r.text}")
                     if r.json()['errno'] == 0:
                         self.update_cookie_bdclnd(r.json()['randsk'])
                     else:
-                        return None, "提取码错误", None
+                        return None, f"提取码错误(errno={r.json().get('errno')})", None
 
+                print("[BaiduEngine] 请求页面内容...")
                 content = self.s.get(clean_url, headers=self.headers, verify=False).text
+                
+                # 调试：检测是否出现验证码
+                if "验证码" in content or "verify" in content:
+                    print("[BaiduEngine] ❌ 警告：页面包含验证码关键字！IP可能被拦截。")
+
                 try:
                     shareid = re.search(r'"shareid":(\d+?),', content).group(1)
                     uk = re.search(r'"share_uk":"(\d+?)",', content).group(1)
                     fs_id_list = re.findall(r'"fs_id":(\d+?),', content)
-                    if not fs_id_list: return None, "无文件", None
+                    print(f"[BaiduEngine] 解析成功: shareid={shareid}, uk={uk}, 文件数={len(fs_id_list)}")
                     
+                    if not fs_id_list: return None, "解析成功但无文件", None
                     fs_id_list_str = f"[{','.join(fs_id_list)}]"
                     
                     if is_inject:
@@ -392,9 +427,12 @@ class BaiduEngine:
                             'shareid': shareid, 'uk': uk, 'fsidlist': fs_id_list_str
                         }
 
-                except: return None, "页面解析失败", None
+                except Exception as e: 
+                    print(f"[BaiduEngine] ❌ 正则解析失败。页面内容摘要: {content[:200]}")
+                    return None, "页面解析失败(可能IP被拦截)", None
             except Exception as e: return None, f"异常: {str(e)[:20]}", None
 
+        # --- 转存逻辑 ---
         try:
             if is_inject:
                 save_path = root_path
@@ -404,13 +442,16 @@ class BaiduEngine:
                 save_path = f"{root_path}/{final_folder}"
                 self.create_dir(save_path) 
 
+            print(f"[BaiduEngine] 开始转存至: {save_path}")
             try:
                 r = self.s.post('https://pan.baidu.com/share/transfer', 
                                 params={'shareid': shareid, 'from': uk, 'bdstoken': self.bdstoken},
                                 data={'fsidlist': fs_id_list_str, 'path': save_path}, 
                                 headers=self.headers, verify=False, timeout=20)
                 res = r.json()
-            except requests.exceptions.RequestException:
+                print(f"[BaiduEngine] 转存响应: {res}")
+            except requests.exceptions.RequestException as e:
+                print(f"[BaiduEngine] 转存请求超时: {e}")
                 return None, "转存请求超时(文件可能过大)", None
 
             if res.get('errno') == 12: 
@@ -422,30 +463,40 @@ class BaiduEngine:
                 err_msg = f"转存失败({errno})"
                 if errno == -10: err_msg = "容量不足或文件数超限"
                 elif errno == -33: err_msg = "文件数超出限制(非会员500)"
+                elif errno == -6: err_msg = "Cookie身份失效(-6)"
                 elif errno == 4: err_msg = "文件路径无效或包含违规内容(errno:4)"
+                print(f"[BaiduEngine] ❌ 错误详情: {err_msg}")
                 return None, err_msg, None
 
             if is_inject: return "INJECT_OK", "成功", save_path
 
+            # --- 分享逻辑 ---
+            print("[BaiduEngine] 获取已转存文件ID用于分享...")
             r = self.s.get('https://pan.baidu.com/api/list', params={'dir': root_path, 'bdstoken': self.bdstoken}, headers=self.headers, verify=False)
             target_fsid = None
             for item in r.json().get('list', []):
                 if item['server_filename'] == final_folder:
                     target_fsid = item['fs_id']; break
             
-            if not target_fsid: return None, "✅ 已存入网盘 (获取目录失败)", None
+            if not target_fsid: 
+                print("[BaiduEngine] ❌ 未在目录下找到刚转存的文件")
+                return None, "✅ 已存入网盘 (获取目录失败)", None
 
             new_pwd = ''.join(random.choices(string.ascii_letters + string.digits, k=4))
+            print("[BaiduEngine] 创建分享链接...")
             r = self.s.post('https://pan.baidu.com/share/set', 
                             params={'bdstoken': self.bdstoken, 'channel': 'chunlei', 'clienttype': 0, 'web': 1},
                             data={'period': 0, 'pwd': new_pwd, 'fid_list': f'[{target_fsid}]', 'schannel': 4}, headers=self.headers, verify=False)
+            print(f"[BaiduEngine] 分享响应: {r.text}")
             
             if r.json()['errno'] == 0:
                 return f"{r.json()['link']}?pwd={new_pwd}", "成功", save_path 
             return None, "✅ 已存入网盘 (分享失败)", None
 
         except Exception as e:
+            print(f"[BaiduEngine] ❌ 最终异常: {e}")
             return None, f"发生异常: {str(e)[:20]}...", None
+
 
 # ==========================================
 # 4. 常量定义 (多用户模式下，这部分移到 Main 中动态生成)
