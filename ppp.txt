@@ -17,13 +17,14 @@ from urllib.parse import quote
 from retrying import retry
 
 # ==========================================
-# 0. 数据库管理 (SQLite3)
+# 0. 数据库管理 (自动迁移版)
 # ==========================================
 DB_FILE = "linkchanger.db"
 
 class DBManager:
     def __init__(self):
         self._init_db()
+        self._migrate_db() # 自动检测并添加新字段
 
     def _get_conn(self):
         return sqlite3.connect(DB_FILE, check_same_thread=False)
@@ -41,17 +42,41 @@ class DBManager:
                         q_img TEXT,
                         b_img TEXT,
                         b_pwd TEXT,
+                        bark TEXT,
+                        pushdeer TEXT,
                         created_at TEXT
                     )''')
         conn.commit()
         conn.close()
+
+    def _migrate_db(self):
+        """检测旧数据库，自动添加 bark 和 pushdeer 字段"""
+        conn = self._get_conn()
+        c = conn.cursor()
+        try:
+            # 尝试查询新字段，如果报错说明不存在
+            c.execute("SELECT bark FROM users LIMIT 1")
+        except sqlite3.OperationalError:
+            # 添加字段
+            try:
+                c.execute("ALTER TABLE users ADD COLUMN bark TEXT DEFAULT ''")
+                c.execute("ALTER TABLE users ADD COLUMN pushdeer TEXT DEFAULT ''")
+                conn.commit()
+                print("数据库已升级：添加 bark/pushdeer 字段")
+            except Exception as e:
+                print(f"数据库迁移失败: {e}")
+        finally:
+            conn.close()
 
     def add_user(self, uid, name, pin, wechat):
         conn = self._get_conn()
         c = conn.cursor()
         try:
             created_at = datetime.now().strftime("%Y-%m-%d %H:%M")
-            c.execute("INSERT INTO users (uid, name, pin, wechat, q_cookie, b_cookie, q_img, b_img, b_pwd, created_at) VALUES (?, ?, ?, ?, '', '', '', '', '', ?)",
+            # 插入所有字段
+            c.execute("""INSERT INTO users 
+                         (uid, name, pin, wechat, q_cookie, b_cookie, q_img, b_img, b_pwd, bark, pushdeer, created_at) 
+                         VALUES (?, ?, ?, ?, '', '', '', '', '', '', '', ?)""",
                       (uid, name, pin, wechat, created_at))
             conn.commit()
             return True, "添加成功"
@@ -69,10 +94,13 @@ class DBManager:
         row = c.fetchone()
         conn.close()
         if row:
+            # 映射字段 (确保顺序与 CREATE TABLE 一致)
+            # 0:uid, 1:name, 2:pin, 3:wechat, 4:q, 5:b, 6:q_img, 7:b_img, 8:b_pwd, 9:bark, 10:pushdeer
             return {
                 "uid": row[0], "name": row[1], "pin": row[2], "wechat": row[3],
                 "q": row[4], "b": row[5], 
-                "q_img": row[6], "b_img": row[7], "b_pwd": row[8]
+                "q_img": row[6], "b_img": row[7], "b_pwd": row[8],
+                "bark": row[9], "pushdeer": row[10]
             }
         return None
 
@@ -84,14 +112,19 @@ class DBManager:
         conn.close()
         return rows 
 
-    def update_user_profile(self, uid, name, pin, q, b, q_img, b_img, b_pwd):
+    def update_user_profile(self, uid, data_dict):
         conn = self._get_conn()
         c = conn.cursor()
+        # 动态更新
         c.execute('''UPDATE users SET 
                      name=?, pin=?, q_cookie=?, b_cookie=?, 
-                     q_img=?, b_img=?, b_pwd=? 
+                     q_img=?, b_img=?, b_pwd=?,
+                     bark=?, pushdeer=?
                      WHERE uid=?''', 
-                  (name, pin, q, b, q_img, b_img, b_pwd, uid))
+                  (data_dict['name'], data_dict['pin'], data_dict['q'], data_dict['b'], 
+                   data_dict['q_img'], data_dict['b_img'], data_dict['b_pwd'],
+                   data_dict['bark'], data_dict['pushdeer'],
+                   uid))
         conn.commit()
         conn.close()
 
@@ -105,22 +138,18 @@ class DBManager:
 db = DBManager()
 
 # ==========================================
-# 1. 核心 Engine 与 Worker (请务必填入真实代码)
+# 1. 核心 Engine 与 Worker (占位符)
 # ==========================================
+# 🔴🔴🔴 请在此处填入你真实的 Engine 类代码 🔴🔴🔴
 
-# 🔴🔴🔴 极其重要：请在此处粘贴你原本好用的 QuarkEngine, BaiduEngine, JobManager 代码 🔴🔴🔴
-# 🔴🔴🔴 否则程序无法运行转存功能 🔴🔴🔴
-
-# --- Mock 代码开始 (仅用于演示结构，请替换) ---
-# helper functions
+# --- Mock 代码 (仅供演示 UI，请替换) ---
 def get_time_diff(t): return "1s"
 def smart_shorten_url(t): return t
 def create_copy_button_html(t): return ""
 def extract_smart_folder_name(t, s): return "Res"
 def sanitize_filename(n): return n
-def send_notification(b, p, t, bo): pass
+def send_notification(b, p, t, bo): pass # 请替换为真实的发送函数
 
-# Job Manager
 @st.cache_resource
 class JobManager:
     def __init__(self): self.jobs = {}
@@ -136,292 +165,313 @@ class JobManager:
             self.jobs[jid]["status"]="done"; self.jobs[jid]["result_text"]=text; self.jobs[jid]["summary"]=sum
     def update_progress(self, jid, c, t):
         if jid in self.jobs: self.jobs[jid]["progress"] = {"current": c, "total": t}
-
 job_manager = JobManager()
 
 def worker_thread(job_id, input_text, q_c, b_c, bark, push, img_conf):
-    # 🔴 请替换为真实的 worker_thread 逻辑
+    # 🔴 请替换为真实的 worker_thread
     time.sleep(1)
     job_manager.complete_job(job_id, input_text + "\n(处理完毕)", {"success": 1, "total": 1, "duration": "1s"})
-# --- Mock 代码结束 ---
+# --- Mock End ---
 
 
 # ==========================================
-# 2. 界面视图逻辑 (UI)
+# 2. UI 组件与工具函数
 # ==========================================
 st.set_page_config(page_title="LinkChanger Pro", page_icon="⚡", layout="wide")
 
-# 移除缓存装饰器，防止报错
 def get_manager():
     return stx.CookieManager()
 
-# --- 管理员后台 (美化版) ---
-def page_admin():
-    st.title("🛡️ 控制台")
+def check_login_status(uid):
+    """
+    核心：登录状态检查 (解决刷新需要重登的问题)
+    优先查 Session -> 其次查 Cookie -> 恢复 Session
+    """
+    session_key = f"auth_{uid}"
     
-    # 后台登录
+    # 1. Session 命中
+    if st.session_state.get(session_key):
+        return True
+    
+    # 2. Cookie 命中
+    cookie_manager = get_manager()
+    cookie_val = cookie_manager.get(session_key)
+    if cookie_val == "logged_in":
+        st.session_state[session_key] = True # 恢复 Session
+        return True
+        
+    return False
+
+def render_status_badge(label, is_active):
+    color = "#d4edda" if is_active else "#f8d7da"
+    text_color = "#155724" if is_active else "#721c24"
+    icon = "🟢" if is_active else "🔴"
+    return f"""
+    <div style="background-color: {color}; color: {text_color}; padding: 4px 10px; border-radius: 12px; font-size: 12px; display: inline-block; margin-right: 5px; font-weight: bold;">
+        {icon} {label}
+    </div>
+    """
+
+# ==========================================
+# 3. 页面逻辑：管理员后台
+# ==========================================
+def page_admin():
+    st.markdown("### 🛡️ LinkChanger 控制台")
+    
     ADMIN_PWD = st.secrets.get("general", {}).get("admin_password", "admin888")
+    
     if "admin_logged_in" not in st.session_state:
-        c1, c2, c3 = st.columns([1, 2, 1])
-        with c2:
-            st.info("🔒 管理员身份验证")
-            pwd = st.text_input("Password", type="password", label_visibility="collapsed")
-            if st.button("Unlock Dashboard", type="primary", use_container_width=True):
+        with st.container(border=True):
+            c1, c2 = st.columns([2, 1])
+            c1.info("请验证管理员身份")
+            pwd = c2.text_input("Password", type="password", label_visibility="collapsed", placeholder="输入密码")
+            if c2.button("验证登录", type="primary", use_container_width=True):
                 if pwd == ADMIN_PWD:
                     st.session_state.admin_logged_in = True
                     st.rerun()
                 else:
                     time.sleep(1)
-                    st.error("Access Denied")
+                    st.error("密码错误")
         return
 
-    # 数据概览
+    # 顶部数据卡片
     users = db.get_all_users()
-    
-    # 顶部指标卡
-    m1, m2, m3 = st.columns(3)
-    m1.metric("总用户数", len(users))
-    m2.metric("活跃用户", len([u for u in users if u[4] or u[5]])) # 有Cookie就算活跃
-    m3.metric("系统状态", "🟢 在线")
-    
-    st.divider()
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("注册用户", len(users))
+    col2.metric("有效Cookie", len([u for u in users if u[4] or u[5]]))
+    col3.metric("运行状态", "Running")
+    if col4.button("退出管理"):
+        del st.session_state["admin_logged_in"]
+        st.rerun()
 
-    # 使用 Tab 分隔功能，更整洁
-    tab_list, tab_add = st.tabs(["👥 用户管理", "➕ 添加用户"])
+    st.markdown("---")
 
-    with tab_list:
+    # Tab 分页
+    tab1, tab2 = st.tabs(["👥 用户列表", "➕ 新增用户"])
+    
+    with tab1:
         if not users:
-            st.info("暂无用户，请去添加")
+            st.info("暂无用户")
         else:
-            #以此为表头
-            st.markdown(
-                """
-                | 昵称 | UID | 微信号 | 状态 | 操作 |
-                |---|---|---|---|---|
-                """
-            )
+            # 列表头部
+            cols = st.columns([2, 2, 2, 3, 1])
+            cols[0].markdown("**昵称**")
+            cols[1].markdown("**UID**")
+            cols[2].markdown("**微信号**")
+            cols[3].markdown("**配置状态**")
+            cols[4].markdown("**操作**")
+            
             for u in users:
-                uid, name, wechat, t, q, b = u
+                with st.container(border=True):
+                    cols = st.columns([2, 2, 2, 3, 1])
+                    cols[0].write(u[1]) # Name
+                    cols[1].code(u[0])  # UID
+                    cols[2].write(u[2]) # WeChat
+                    
+                    # 状态徽章
+                    badges = ""
+                    if u[4]: badges += render_status_badge("夸克", True)
+                    else: badges += render_status_badge("夸克", False)
+                    if u[5]: badges += render_status_badge("百度", True)
+                    else: badges += render_status_badge("百度", False)
+                    cols[3].markdown(badges, unsafe_allow_html=True)
+                    
+                    if cols[4].button("🗑️", key=f"del_{u[0]}"):
+                        db.delete_user(u[0])
+                        st.toast("已删除")
+                        time.sleep(1)
+                        st.rerun()
+
+    with tab2:
+        with st.container(border=True):
+            st.markdown("#### 创建新账号")
+            with st.form("add_user"):
+                c1, c2 = st.columns(2)
+                uid = c1.text_input("UID (登录账号)", placeholder="例: vip001")
+                name = c2.text_input("用户昵称", placeholder="例: 张三")
+                c3, c4 = st.columns(2)
+                wechat = c3.text_input("微信号", placeholder="仅记录")
+                pin = c4.text_input("初始密码", value="123456")
                 
-                # 状态图标
-                status_icon = ""
-                if q: status_icon += "🍪夸克 "
-                if b: status_icon += "🍪百度"
-                if not status_icon: status_icon = "⚪未配置"
-
-                c1, c2, c3, c4, c5 = st.columns([2, 2, 2, 2, 1])
-                c1.write(f"**{name}**")
-                c2.code(uid)
-                c3.write(wechat)
-                c4.caption(status_icon)
-                if c5.button("🗑️", key=f"del_{uid}", help="删除该用户"):
-                    db.delete_user(uid)
-                    st.toast(f"用户 {name} 已删除")
-                    time.sleep(1)
-                    st.rerun()
-                st.markdown("---") # 分割线
-
-    with tab_add:
-        st.markdown("#### 创建专属链接")
-        with st.form("add_user_form", border=False):
-            c1, c2 = st.columns(2)
-            new_uid = c1.text_input("自定义 UID (如: vip888, tony)", help="这是用户唯一的登录凭证")
-            new_name = c2.text_input("用户昵称")
-            
-            c3, c4 = st.columns(2)
-            new_wechat = c3.text_input("绑定微信号 (仅记录)")
-            new_pin = c4.text_input("初始密码 (用户可修改)", value="123456")
-            
-            submitted = st.form_submit_button("✨ 立即创建", type="primary")
-            if submitted:
-                if not new_uid or not new_name:
-                    st.error("UID 和 昵称 必须填写")
-                else:
-                    ok, msg = db.add_user(new_uid, new_name, new_pin, new_wechat)
-                    if ok:
-                        st.success(f"✅ 用户 {new_name} 创建成功！")
-                        st.code(f"?uid={new_uid}", language="text")
-                        st.caption("👆 把这个后缀发给用户即可")
+                if st.form_submit_button("确认创建", type="primary", use_container_width=True):
+                    if uid and name:
+                        ok, msg = db.add_user(uid, name, pin, wechat)
+                        if ok:
+                            st.success(f"创建成功！发送链接: `?uid={uid}`")
+                        else:
+                            st.error(msg)
                     else:
-                        st.error(msg)
+                        st.error("请填写完整")
 
-# --- 用户工具页 (功能页) ---
+# ==========================================
+# 4. 页面逻辑：用户工具页
+# ==========================================
 def page_user_tool(uid):
-    user_data = db.get_user(uid)
-    if not user_data:
-        st.error("❌ 账号异常")
+    user = db.get_user(uid)
+    if not user:
+        st.error("账号异常，请联系管理员")
         return
 
-    # === 侧边栏 ===
+    # === 侧边栏：极简信息 ===
     with st.sidebar:
-        st.header(f"👤 {user_data['name']}")
+        st.header(f"👋 Hi, {user['name']}")
+        st.caption(f"UID: {user['uid']}")
         
-        with st.expander("⚙️ 账号配置", expanded=False):
-            st.caption("ID: " + uid)
+        # 退出登录
+        if st.button("🚪 安全退出", use_container_width=True):
+            # 清除 Cookie 和 Session
+            get_manager().delete(f"auth_{uid}")
+            if f"auth_{uid}" in st.session_state:
+                del st.session_state[f"auth_{uid}"]
+            st.rerun()
             
-            # 使用 Form 防止每次输入一个字都刷新
-            with st.form("profile_form"):
-                st.write("**基本信息**")
-                new_name = st.text_input("昵称", value=user_data['name'])
-                new_pin = st.text_input("密码", value=user_data['pin'], type="password")
-                
-                st.write("**网盘 Cookie (核心)**")
-                new_q = st.text_area("夸克 Cookie", value=user_data['q'], height=80)
-                new_b = st.text_area("百度 Cookie", value=user_data['b'], height=80)
-                
-                st.write("**广告植入 (可选)**")
-                new_q_img = st.text_input("夸克广告链", value=user_data['q_img'])
-                new_b_img = st.text_input("百度广告链", value=user_data['b_img'])
-                new_b_pwd = st.text_input("百度提取码", value=user_data['b_pwd'])
-                
-                if st.form_submit_button("💾 保存配置"):
-                    db.update_user_profile(
-                        uid, new_name, new_pin, 
-                        new_q, new_b, 
-                        new_q_img, new_b_img, new_b_pwd
-                    )
-                    st.toast("配置已保存！", icon="✅")
-                    time.sleep(0.5)
-                    st.rerun()
+        st.markdown("---")
+        st.markdown("**状态概览**")
+        st.markdown(render_status_badge("夸克网盘", bool(user['q'])), unsafe_allow_html=True)
+        st.markdown(render_status_badge("百度网盘", bool(user['b'])), unsafe_allow_html=True)
+        st.markdown(render_status_badge("消息推送", bool(user['bark'] or user['pushdeer'])), unsafe_allow_html=True)
 
-        if st.button("🚪 退出登录", use_container_width=True):
-             get_manager().delete(f"auth_{uid}")
-             # 清除 session state
-             if f"auth_{uid}" in st.session_state:
-                 del st.session_state[f"auth_{uid}"]
-             st.query_params.clear()
-             st.rerun()
+    # === 主区域 ===
+    # 这里的 Tab 设计是解决“丑”的关键
+    tab_task, tab_config = st.tabs(["🚀 转存任务", "⚙️ 参数配置"])
 
-    # === 主界面 ===
-    st.subheader(f"⚡ 欢迎, {user_data['name']}")
-    
-    # 状态栏
-    col1, col2 = st.columns([3, 1])
-    with col1:
-        if not user_data['q'] and not user_data['b']:
-            st.warning("⚠️ 尚未配置任何 Cookie，无法工作。请点击左侧配置。")
-        else:
-            tags = []
-            if user_data['q']: tags.append("✅夸克")
-            if user_data['b']: tags.append("✅百度")
-            st.caption("就绪引擎: " + " / ".join(tags))
+    # --- Tab 1: 任务中心 ---
+    with tab_task:
+        with st.container(border=True):
+            st.markdown("##### 📝 新建任务")
+            input_text = st.text_area("在此粘贴分享链接", height=120, placeholder="支持混合粘贴：\nhttps://pan.quark.cn/s/...\nhttps://pan.baidu.com/s/...")
             
-    # 任务提交区
-    with st.container(border=True):
-        input_text = st.text_area("在此粘贴分享链接 (支持批量混合)", height=150, placeholder="https://pan.quark.cn/s/...\nhttps://pan.baidu.com/s/...")
-        
-        if st.button("🚀 立即转存", type="primary", use_container_width=True):
-            if not input_text.strip():
-                st.toast("请先粘贴链接", icon="⚠️")
-            elif not user_data['q'] and not user_data['b']:
-                st.error("请先在左侧配置 Cookie")
-            else:
-                jid = job_manager.create_job()
-                img_conf = {
-                    "quark": {"url": user_data['q_img'], "enabled": bool(user_data['q_img'])},
-                    "baidu": {"url": user_data['b_img'], "pwd": user_data['b_pwd'], "enabled": bool(user_data['b_img'])}
-                }
-                
-                t = threading.Thread(target=worker_thread, args=(
-                    jid, input_text, 
-                    user_data['q'], user_data['b'], 
-                    "", "", img_conf
-                ))
-                t.start()
-                st.query_params["job_id"] = jid
-                st.query_params["uid"] = uid
-                st.rerun()
-
-    # 结果回显区 (复用)
-    curr_jid = st.query_params.get("job_id")
-    if curr_jid:
-        job = job_manager.get_job(curr_jid)
-        if job:
-            with st.status(f"任务状态: {job['status']}", expanded=True) as status:
-                if job['status'] == 'done':
-                    status.update(label="✅ 处理完成", state="complete", expanded=True)
-                    st.text_area("最终结果", value=job['result_text'], height=150)
+            c_run, c_tip = st.columns([1, 3])
+            start_btn = c_run.button("🚀 开始转存", type="primary", use_container_width=True)
+            c_tip.caption("💡 自动识别夸克/百度链接，自动去重，自动植入广告。")
+            
+            if start_btn:
+                if not input_text.strip():
+                    st.toast("请先粘贴链接！", icon="⚠️")
+                elif not user['q'] and not user['b']:
+                    st.error("请先在「参数配置」页填入 Cookie！")
                 else:
-                    st.write("正在处理中，请稍候...")
-                
-                # 简易日志
-                for log in job['logs']:
-                    st.text(f"{log['msg']}")
-            
-            if job['status'] == 'done':
-                if st.button("开始新任务"):
-                    st.query_params["job_id"] = ""
+                    jid = job_manager.create_job()
+                    # 组装配置
+                    img_conf = {
+                        "quark": {"url": user['q_img'], "enabled": bool(user['q_img'])},
+                        "baidu": {"url": user['b_img'], "pwd": user['b_pwd'], "enabled": bool(user['b_img'])}
+                    }
+                    t = threading.Thread(target=worker_thread, args=(
+                        jid, input_text, user['q'], user['b'], 
+                        user['bark'], user['pushdeer'], img_conf
+                    ))
+                    t.start()
+                    st.query_params["job_id"] = jid
                     st.query_params["uid"] = uid
                     st.rerun()
 
+        # 结果显示区
+        curr_jid = st.query_params.get("job_id")
+        if curr_jid:
+            job = job_manager.get_job(curr_jid)
+            if job:
+                st.markdown("##### 📊 任务进度")
+                with st.status(f"当前状态: {job['status']}", expanded=True) as status:
+                    if job['status'] == 'done':
+                        status.update(label="✅ 任务已完成", state="complete")
+                        st.success("处理完毕！")
+                        st.text_area("处理结果 (可复制)", value=job['result_text'], height=150)
+                    else:
+                        st.info("正在努力搬运中...")
+                    
+                    # 实时日志
+                    for log in job['logs']:
+                        st.text(f"{log['time']} {log['msg']}")
+                
+                if job['status'] == 'done':
+                    if st.button("开始下一批"):
+                        st.query_params["job_id"] = ""
+                        st.query_params["uid"] = uid
+                        st.rerun()
+
+    # --- Tab 2: 配置中心 (美化版) ---
+    with tab_config:
+        with st.form("config_form", border=True):
+            st.subheader("🔧 个人参数设置")
+            
+            st.markdown("###### 1. 账号与安全")
+            c1, c2 = st.columns(2)
+            u_name = c1.text_input("用户昵称", value=user['name'])
+            u_pin = c2.text_input("登录密码", value=user['pin'], type="password")
+            
+            st.markdown("###### 2. 网盘 Cookie (核心)")
+            u_q = st.text_area("夸克 Cookie", value=user['q'], height=80, placeholder="填入 Cookie...")
+            u_b = st.text_area("百度 Cookie", value=user['b'], height=80, placeholder="填入 Cookie...")
+            
+            st.markdown("###### 3. 广告植入 (可选)")
+            c3, c4 = st.columns(2)
+            u_q_img = c3.text_input("夸克广告链接", value=user['q_img'])
+            u_b_img = c4.text_input("百度广告链接", value=user['b_img'])
+            u_b_pwd = c4.text_input("百度提取码", value=user['b_pwd'])
+            
+            st.markdown("###### 4. 消息推送 (可选)")
+            c5, c6 = st.columns(2)
+            u_bark = c5.text_input("iOS Bark Key", value=user['bark'], placeholder="例如: XQCpH...")
+            u_push = c6.text_input("PushDeer Key", value=user['pushdeer'])
+            
+            if st.form_submit_button("💾 保存所有配置", type="primary", use_container_width=True):
+                # 构造更新字典
+                new_data = user.copy()
+                new_data.update({
+                    'name': u_name, 'pin': u_pin,
+                    'q': u_q, 'b': u_b,
+                    'q_img': u_q_img, 'b_img': u_b_img, 'b_pwd': u_b_pwd,
+                    'bark': u_bark, 'pushdeer': u_push
+                })
+                db.update_user_profile(uid, new_data)
+                st.toast("配置已保存！", icon="✅")
+                time.sleep(1)
+                st.rerun()
+
 # ==========================================
-# 3. 程序入口 (Main)
+# 5. 主程序入口
 # ==========================================
 def main():
-    # URL 参数
-    uid_param = st.query_params.get("uid", None)
+    # 获取 UID
+    uid = st.query_params.get("uid", None)
     HIDDEN_ADMIN_UID = st.secrets.get("general", {}).get("admin_uid", "admin_entry_default")
 
-    # 1. 403 禁止访问
-    if not uid_param:
-        st.markdown(
-            """
-            <style>
-            .stApp {align-items: center; justify-content: center;}
-            </style>
-            <div style="text-align:center; margin-top: 100px;">
-                <h1>🚫 Access Denied</h1>
-                <p>Private Tool. Invitation Only.</p>
-            </div>
-            """, 
-            unsafe_allow_html=True
-        )
+    # 1. 拦截非法访问
+    if not uid:
+        st.markdown("<br><br><h2 style='text-align:center'>🚫 Access Denied</h2>", unsafe_allow_html=True)
         return
 
     # 2. 管理员
-    if uid_param == HIDDEN_ADMIN_UID:
+    if uid == HIDDEN_ADMIN_UID:
         page_admin()
         return
 
-    # 3. 用户登录逻辑
-    user_data = db.get_user(uid_param)
-    if not user_data:
-        st.error("🚫 无效的链接 (UID Invalid)")
-        return
-    
-    # 修复：优先检查 Session State (秒进)，其次检查 Cookie
-    session_key = f"auth_{uid_param}"
-    
-    # 如果 Session 里已经标记已登录，直接进
-    if st.session_state.get(session_key):
-        page_user_tool(uid_param)
+    # 3. 普通用户
+    user = db.get_user(uid)
+    if not user:
+        st.error("无效的 UID")
         return
 
-    # 如果没有 Session，检查 Cookie
-    cookie_manager = get_manager()
-    cookie_val = cookie_manager.get(session_key)
-    
-    if cookie_val == "logged_in":
-        # Cookie 有效，同步写入 Session 并进入
-        st.session_state[session_key] = True
-        page_user_tool(uid_param)
-        return
-    
-    # 4. 显示锁屏界面
-    col1, col2, col3 = st.columns([1, 2, 1])
-    with col2:
-        st.markdown(f"### 🔒 Welcome, {user_data['name']}")
-        pin_input = st.text_input("Enter Password", type="password")
-        
-        if st.button("Login", type="primary", use_container_width=True):
-            if pin_input == user_data['pin']:
-                # 登录成功双重标记：1.写Cookie(持久化) 2.写Session(即时生效)
-                cookie_manager.set(session_key, "logged_in", expires_at=datetime.now() + timedelta(days=30))
-                st.session_state[session_key] = True
-                st.rerun()
-            else:
-                time.sleep(0.5)
-                st.error("Incorrect Password")
+    # 4. 鉴权 (优先 Session -> 其次 Cookie)
+    if check_login_status(uid):
+        page_user_tool(uid)
+    else:
+        # 锁屏界面 (居中卡片)
+        col1, col2, col3 = st.columns([1, 2, 1])
+        with col2:
+            st.markdown(f"<h3 style='text-align:center'>🔒 Welcome Back</h3>", unsafe_allow_html=True)
+            with st.container(border=True):
+                st.write(f"用户：**{user['name']}**")
+                pwd = st.text_input("Password", type="password", label_visibility="collapsed", placeholder="输入密码解锁")
+                if st.button("解锁进入", type="primary", use_container_width=True):
+                    if pwd == user['pin']:
+                        # 登录成功：写 Cookie + 写 Session
+                        get_manager().set(f"auth_{uid}", "logged_in", expires_at=datetime.now() + timedelta(days=30))
+                        st.session_state[f"auth_{uid}"] = True
+                        st.rerun()
+                    else:
+                        st.error("密码错误")
 
 if __name__ == "__main__":
     main()
