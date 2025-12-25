@@ -42,7 +42,7 @@ class JobManager:
 
     def _cleanup_old_jobs(self):
         now = datetime.now()
-        retention_seconds = 3600 # 1小时后清理，节省内存
+        retention_seconds = 3600 # 1小时后清理
         expired_ids = [jid for jid, job in self.jobs.items() 
                        if (now - job['created_at']).total_seconds() > retention_seconds]
         for jid in expired_ids:
@@ -161,15 +161,11 @@ def extract_smart_folder_name(full_text: str, match_start: int) -> str:
     for line in reversed(lines):
         clean_line = line.strip()
         if not clean_line: continue
-        if re.match(r'^(百度|链接|提取码|:|：|https?|夸克|pwd|code)*$', clean_line, re.IGNORECASE):
-            continue
+        if re.match(r'^(百度|链接|提取码|:|：|https?|夸克|pwd|code)*$', clean_line, re.IGNORECASE): continue
         clean_line = re.sub(r'(百度|链接|提取码|:|：|pwd|夸克).*$', '', clean_line, flags=re.IGNORECASE).strip()
-        if clean_line:
-            candidate_name = clean_line
-            break
+        if clean_line: candidate_name = clean_line; break
     final_name = sanitize_filename(candidate_name)
-    if not final_name or len(final_name) < 2:
-        return f"Res_{int(time.time())}" 
+    if not final_name or len(final_name) < 2: return f"Res_{int(time.time())}" 
     return final_name[:50]
 
 def send_notification(bark_key, pushdeer_key, title, body):
@@ -190,9 +186,7 @@ class QuarkEngine:
     def __init__(self, cookies: str):
         self.headers = {
             'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'cookie': cookies,
-            'origin': 'https://pan.quark.cn',
-            'referer': 'https://pan.quark.cn/',
+            'cookie': cookies, 'origin': 'https://pan.quark.cn', 'referer': 'https://pan.quark.cn/',
         }
         self.client = httpx.AsyncClient(timeout=45.0, headers=self.headers, follow_redirects=True)
         self.inject_cache = None 
@@ -503,7 +497,7 @@ def worker_thread(job_id, input_text, quark_cookie, baidu_cookie, bark_key, push
     asyncio.run(async_worker())
 
 # ==========================================
-# 6. 主逻辑 (多用户改造 + Cookie免密)
+# 6. 主逻辑 (多用户改造 + Cookie免密登录)
 # ==========================================
 @st.cache_data(ttl=300) 
 def check_cookies_validity(q_c, b_c):
@@ -557,17 +551,24 @@ def main():
         st.stop()
 
     # 🍪 界面 3: Cookie 免密 / PIN 码验证
+    # 初始化 Cookie Manager
     cookie_manager = stx.CookieManager(key="auth_cookies")
     
+    # 如果用户配置了 PIN
     if "pin" in user_data:
+        # 读取浏览器中的 Token
         cookie_name = f"auth_token_{uid}"
         cookie_val = cookie_manager.get(cookie_name)
+        
+        # 验证逻辑: 
+        # 1. 内存 Session 已解锁 -> Pass
+        # 2. Cookie 存在且匹配 PIN -> Pass
         is_unlocked = False
         
         if st.session_state.get(f"unlocked_{uid}", False):
             is_unlocked = True
         elif cookie_val and str(cookie_val) == str(user_data['pin']):
-            st.session_state[f"unlocked_{uid}"] = True 
+            st.session_state[f"unlocked_{uid}"] = True # 同步到 Session
             is_unlocked = True
             
         if not is_unlocked:
@@ -579,13 +580,16 @@ def main():
                 
                 if st.button("🔓 解锁并记住我", type="primary", use_container_width=True):
                     if input_pin == str(user_data['pin']):
+                        # ✅ 密码正确
                         st.session_state[f"unlocked_{uid}"] = True
                         expires = datetime.now() + timedelta(days=30)
                         cookie_manager.set(cookie_name, input_pin, expires_at=expires)
+                        st.success("登录成功！正在跳转...")
+                        time.sleep(1) # 🛑 强制等待浏览器写入Cookie
                         st.rerun()
                     else:
                         st.error("❌ 密码错误，请重试")
-            st.stop() 
+            st.stop() # ⛔ 停止加载后续
 
     # ✅ 界面 4: 正常功能区
     current_name = user_data.get('name', 'User')
@@ -621,6 +625,7 @@ def main():
         
         if bark_key or pushdeer_key: st.info("📢 消息推送: 开启")
         
+        # 退出登录按钮
         if "pin" in user_data:
             st.divider()
             if st.button("🔒 退出登录 (清除凭证)"):
