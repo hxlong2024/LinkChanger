@@ -11,7 +11,7 @@ import json
 import threading
 import uuid
 import html
-import extra_streamlit_components as stx  # 📦 必须引入这个库
+import extra_streamlit_components as stx
 from urllib.parse import quote
 from datetime import datetime, timedelta, timezone
 from typing import Union, List, Any
@@ -161,15 +161,11 @@ def extract_smart_folder_name(full_text: str, match_start: int) -> str:
     for line in reversed(lines):
         clean_line = line.strip()
         if not clean_line: continue
-        if re.match(r'^(百度|链接|提取码|:|：|https?|夸克|pwd|code)*$', clean_line, re.IGNORECASE):
-            continue
+        if re.match(r'^(百度|链接|提取码|:|：|https?|夸克|pwd|code)*$', clean_line, re.IGNORECASE): continue
         clean_line = re.sub(r'(百度|链接|提取码|:|：|pwd|夸克).*$', '', clean_line, flags=re.IGNORECASE).strip()
-        if clean_line:
-            candidate_name = clean_line
-            break
+        if clean_line: candidate_name = clean_line; break
     final_name = sanitize_filename(candidate_name)
-    if not final_name or len(final_name) < 2:
-        return f"Res_{int(time.time())}" 
+    if not final_name or len(final_name) < 2: return f"Res_{int(time.time())}" 
     return final_name[:50]
 
 def send_notification(bark_key, pushdeer_key, title, body):
@@ -301,7 +297,7 @@ class QuarkEngine:
 class BaiduEngine:
     def __init__(self, cookies: str):
         self.s = requests.Session()
-        self.headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36', 'Referer': 'https://pan.baidu.com', 'Cookie': "".join(cookies.split())}
+        self.headers = {'User-Agent': 'Mozilla/5.0', 'Referer': 'https://pan.baidu.com', 'Cookie': "".join(cookies.split())}
         self.bdstoken = ''
         self.inject_cache = None 
         requests.packages.urllib3.disable_warnings()
@@ -330,23 +326,18 @@ class BaiduEngine:
         except: pass
 
     def process_url(self, url_info: dict, root_path: str, is_inject: bool = False):
-        # 初始化变量，防止 UnboundLocalError
         shareid = None
         uk = None
         fs_id_list_str = None
 
-        # 1. 获取文件信息 (优先查缓存)
         if is_inject and self.inject_cache:
             shareid = self.inject_cache['shareid']
             uk = self.inject_cache['uk']
             fs_id_list_str = self.inject_cache['fsidlist']
         else:
             try:
-                url = url_info['url']
-                pwd = url_info['pwd']
+                url, pwd = url_info['url'], url_info['pwd']
                 clean_url = url.split('?')[0]
-                
-                # 验证提取码
                 if pwd:
                     surl = re.search(r'(?:surl=|/s/1|/s/)([\w\-]+)', clean_url)
                     if not surl: return None, "URL格式错误", None
@@ -354,32 +345,19 @@ class BaiduEngine:
                     if r.json()['errno'] == 0: self.update_cookie(r.json()['randsk'])
                     else: return None, "提取码错误", None
 
-                # 获取页面内容
                 content = self.s.get(clean_url, headers=self.headers, verify=False).text
-                
-                # 正则提取关键信息
-                shareid_match = re.search(r'"shareid":(\d+?),', content)
-                uk_match = re.search(r'"share_uk":"(\d+?)",', content)
+                shareid = re.search(r'"shareid":(\d+?),', content).group(1)
+                uk = re.search(r'"share_uk":"(\d+?)",', content).group(1)
                 fs_id_list = re.findall(r'"fs_id":(\d+?),', content)
-                
-                if not shareid_match or not uk_match or not fs_id_list:
-                    return None, "页面解析失败(无文件)", None
-                
-                shareid = shareid_match.group(1)
-                uk = uk_match.group(1)
+                if not fs_id_list: return None, "无文件", None
                 fs_id_list_str = f"[{','.join(fs_id_list)}]"
                 
-                # 写入缓存
                 if is_inject:
                     self.inject_cache = {'shareid': shareid, 'uk': uk, 'fsidlist': fs_id_list_str}
-            
-            except Exception as e: return None, f"解析异常: {str(e)[:20]}", None
+            except Exception as e: return None, f"异常: {str(e)[:20]}", None
 
-        # 2. 核心转存逻辑
         try:
-            # 确定保存路径
-            if is_inject: 
-                save_path = root_path
+            if is_inject: save_path = root_path
             else:
                 folder_name = url_info.get('name', 'Res')
                 safe_suffix = ''.join(random.choices(string.ascii_letters + string.digits, k=4))
@@ -387,53 +365,34 @@ class BaiduEngine:
                 save_path = f"{root_path}/{final_folder}"
                 self.create_dir(save_path) 
 
-            # 发起转存请求
             try:
-                r = self.s.post('https://pan.baidu.com/share/transfer', 
-                                params={'shareid': shareid, 'from': uk, 'bdstoken': self.bdstoken},
-                                data={'fsidlist': fs_id_list_str, 'path': save_path}, 
-                                headers=self.headers, verify=False, timeout=20)
+                r = self.s.post('https://pan.baidu.com/share/transfer', params={'shareid': shareid, 'from': uk, 'bdstoken': self.bdstoken},
+                                data={'fsidlist': fs_id_list_str, 'path': save_path}, headers=self.headers, verify=False, timeout=20)
                 res = r.json()
-            except requests.exceptions.RequestException: 
-                return None, "转存请求超时(文件过大)", None
+            except requests.exceptions.RequestException: return None, "转存请求超时(文件可能过大)", None
 
-            # 处理转存结果
             if res.get('errno') == 12: 
                  if is_inject: return "INJECT_OK", "文件已存在", save_path
                  return None, "转存失败(文件已存在)", None
             
-            if res.get('errno') != 0: 
-                errno = res.get('errno')
-                return None, f"转存失败({errno})", None
-
+            if res.get('errno') != 0: return None, f"转存失败({res.get('errno')})", None
             if is_inject: return "INJECT_OK", "成功", save_path
 
-            # 3. 分享逻辑
-            # 获取刚刚转存的文件夹的 fs_id
+            # 分享
             r = self.s.get('https://pan.baidu.com/api/list', params={'dir': root_path, 'bdstoken': self.bdstoken}, headers=self.headers, verify=False)
             target_fsid = None
             for item in r.json().get('list', []):
-                if item['server_filename'] == final_folder: 
-                    target_fsid = item['fs_id']; break
+                if item['server_filename'] == final_folder: target_fsid = item['fs_id']; break
             
             if not target_fsid: return None, "✅ 已存入网盘 (获取目录失败)", None
-            
-            # 创建分享链接
             new_pwd = ''.join(random.choices(string.ascii_letters + string.digits, k=4))
-            r = self.s.post('https://pan.baidu.com/share/set', 
-                            params={'bdstoken': self.bdstoken, 'channel': 'chunlei', 'clienttype': 0, 'web': 1}, 
-                            data={'period': 0, 'pwd': new_pwd, 'fid_list': f'[{target_fsid}]', 'schannel': 4}, headers=self.headers, verify=False)
-            
-            if r.json()['errno'] == 0: 
-                return f"{r.json()['link']}?pwd={new_pwd}", "成功", save_path 
-            
+            r = self.s.post('https://pan.baidu.com/share/set', params={'bdstoken': self.bdstoken, 'channel': 'chunlei', 'clienttype': 0, 'web': 1}, data={'period': 0, 'pwd': new_pwd, 'fid_list': f'[{target_fsid}]', 'schannel': 4}, headers=self.headers, verify=False)
+            if r.json()['errno'] == 0: return f"{r.json()['link']}?pwd={new_pwd}", "成功", save_path 
             return None, "✅ 已存入网盘 (分享失败)", None
-
-        except Exception as e: 
-            return None, f"发生异常: {str(e)[:20]}...", None
+        except Exception as e: return None, f"发生异常: {str(e)[:20]}...", None
 
 # ==========================================
-# 5. 核心：后台线程 Worker
+# 5. 核心：后台线程 Worker (接收动态配置)
 # ==========================================
 def worker_thread(job_id, input_text, quark_cookie, baidu_cookie, bark_key, pushdeer_key, inject_config):
     async def async_worker():
@@ -453,6 +412,7 @@ def worker_thread(job_id, input_text, quark_cookie, baidu_cookie, bark_key, push
         b_engine = BaiduEngine(baidu_cookie) if b_matches else None
 
         try:
+            # --- 夸克 ---
             if q_matches:
                 if not quark_cookie: job_manager.add_log(job_id, "夸克：未配置Cookie，跳过", "error")
                 else:
@@ -489,6 +449,7 @@ def worker_thread(job_id, input_text, quark_cookie, baidu_cookie, bark_key, push
                                     job_manager.add_log(job_id, f"{step_prefix} {msg} (耗时: {t_task_end})", "error")
                                 await asyncio.sleep(random.uniform(2, 4))
 
+            # --- 百度 ---
             if b_matches:
                 if not baidu_cookie: job_manager.add_log(job_id, "百度：未配置Cookie，跳过", "error")
                 else:
@@ -540,7 +501,7 @@ def worker_thread(job_id, input_text, quark_cookie, baidu_cookie, bark_key, push
     asyncio.run(async_worker())
 
 # ==========================================
-# 6. 主逻辑
+# 6. 主逻辑 (多用户改造 + Cookie免密)
 # ==========================================
 @st.cache_data(ttl=300) 
 def check_cookies_validity(q_c, b_c):
@@ -570,6 +531,7 @@ def main():
     uid = query_params.get("uid", None)
     job_id = query_params.get("job_id", None)
 
+    # 🛑 界面 1: 没有 UID
     if not uid:
         st.markdown("<br>", unsafe_allow_html=True)
         col1, col2, col3 = st.columns([1,2,1])
@@ -580,6 +542,7 @@ def main():
             st.caption("如果您是管理员，请在后台 Secrets 中配置用户列表。")
         st.stop()
 
+    # 🛑 界面 2: UID 错误
     user_data = get_user_from_secrets(uid)
     if not user_data:
         st.markdown("<br>", unsafe_allow_html=True)
@@ -591,6 +554,7 @@ def main():
             st.markdown("请联系管理员核实您的链接是否完整。")
         st.stop()
 
+    # 🍪 界面 3: Cookie 免密 / PIN 码验证
     cookie_manager = stx.CookieManager(key="auth_cookies")
     
     if "pin" in user_data:
@@ -610,6 +574,7 @@ def main():
             with c2:
                 st.title(f"🔒 身份验证 - {user_data['name']}")
                 input_pin = st.text_input("请输入 PIN 码解锁", type="password", help="请输入您的访问密码")
+                
                 if st.button("🔓 解锁并记住我", type="primary", use_container_width=True):
                     if input_pin == str(user_data['pin']):
                         st.session_state[f"unlocked_{uid}"] = True
@@ -622,6 +587,7 @@ def main():
                         st.error("❌ 密码错误，请重试")
             st.stop() 
 
+    # ✅ 界面 4: 正常功能区
     current_name = user_data.get('name', 'User')
     q_c = user_data.get('q', '')
     b_c = user_data.get('b', '')
@@ -654,6 +620,13 @@ def main():
         else: st.caption("⚪ 百度植入: 关闭")
         
         if bark_key or pushdeer_key: st.info("📢 消息推送: 开启")
+        
+        if "pin" in user_data:
+            st.divider()
+            if st.button("🔒 退出登录 (清除凭证)"):
+                cookie_manager.delete(f"auth_token_{uid}")
+                del st.session_state[f"unlocked_{uid}"]
+                st.rerun()
 
     if not job_id:
         st.info("💡 提示：夸克/百度后台自动运行，任务开始后可切换网页或软件后台。")
