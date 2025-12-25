@@ -15,28 +15,105 @@ from urllib.parse import quote
 from datetime import datetime, timedelta, timezone
 from typing import Union, List, Any
 from retrying import retry
+# 引入 Cookie 管理器
+import extra_streamlit_components as stx
 
 # ==========================================
-# 0. 基础设置 (页面配置需放在最前)
+# 0. 核心配置与全局对象
+# ==========================================
+
+# 全局任务管理器 (多用户共用一个管理器是安全的，只要 job_id 不冲突)
+@st.cache_resource
+class JobManager:
+    def __init__(self):
+        self.jobs = {} 
+
+    def _cleanup_old_jobs(self):
+        now = datetime.now()
+        expired_ids = [jid for jid, job in self.jobs.items() 
+                       if (now - job['created_at']).total_seconds() > 86400]
+        for jid in expired_ids:
+            del self.jobs[jid]
+
+    def create_job(self):
+        self._cleanup_old_jobs()
+        job_id = str(uuid.uuid4())[:8]
+        self.jobs[job_id] = {
+            "status": "running",
+            "logs": [],
+            "result_text": "",
+            "progress": {"current": 0, "total": 0},
+            "created_at": datetime.now(),
+            "summary": {}
+        }
+        return job_id
+
+    def get_job(self, job_id):
+        return self.jobs.get(job_id)
+
+    def add_log(self, job_id, message, type="info"):
+        if job_id in self.jobs:
+            timestamp = (datetime.now(timezone.utc) + timedelta(hours=8)).strftime("%H:%M:%S")
+            safe_message = html.escape(message)
+            self.jobs[job_id]["logs"].append({"time": timestamp, "msg": safe_message, "type": type})
+
+    def update_progress(self, job_id, current, total):
+        if job_id in self.jobs:
+            self.jobs[job_id]["progress"] = {"current": current, "total": total}
+
+    def complete_job(self, job_id, final_text, summary):
+        if job_id in self.jobs:
+            self.jobs[job_id]["status"] = "done"
+            self.jobs[job_id]["result_text"] = final_text
+            self.jobs[job_id]["summary"] = summary
+
+job_manager = JobManager()
+
+# ==========================================
+# 1. 页面配置与样式
 # ==========================================
 st.set_page_config(
-    page_title="网盘转存助手Pro",
+    page_title="网盘转存助手",
     page_icon="📂",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# ==========================================
-# 1. 核心逻辑保持不变区域
-# (JobManager, Engines, worker_thread, utils)
-# ==========================================
+st.markdown('<div id="top-anchor" style="position:absolute; top:-50px; visibility:hidden;"></div>', unsafe_allow_html=True)
 
-# ... [这里完全保留你原有的工具函数: get_time_diff, smart_shorten_url, create_copy_button_html, sanitize_filename, extract_smart_folder_name, send_notification] ...
-# 为了节省篇幅，假设这里上方是你原代码中 def send_notification 之前的所有工具函数
-# 请确保将原代码中 Invalid_CHARS_REGEX 定义及后续工具函数保留在这里
+# 样式代码保持不变，为了节省篇幅，这里折叠了，实际运行时请保留你的 CSS
+st.markdown("""
+    <style>
+    .block-container { padding-top: 32px !important; padding-bottom: 3rem; }
+    .stTextArea textarea { font-family: 'Source Code Pro', monospace; font-size: 14px; border-radius: 8px; }
+    .log-container { font-family: 'Menlo', 'Monaco', 'Courier New', monospace; font-size: 12px; display: flex; flex-direction: column; border: 1px solid #e0e0e0; border-radius: 10px; padding: 0; background: #fafafa; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
+    .log-item { display: flex; align-items: flex-start; padding: 8px 12px; border-bottom: 1px solid #f0f0f0; line-height: 1.6; transition: background 0.2s; }
+    .log-item:hover { background: #f0f7ff; }
+    .log-item:last-child { border-bottom: none; }
+    .log-time { color: #999; font-size: 11px; margin-right: 12px; min-width: 58px; text-align: right; flex-shrink: 0; padding-top: 1px; }
+    .log-msg { color: #333; flex-grow: 1; word-wrap: break-word; min-width: 0; }
+    .smart-link { display: inline-block; background: #e6f7ff; color: #1890ff; padding: 0 4px; border-radius: 3px; font-family: monospace; border: 1px solid #bae7ff; max-width: 180px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; vertical-align: bottom; font-size: 11px; cursor: text; }
+    .step-badge { display: inline-block; background: #f0f0f0; color: #666; padding: 0 4px; border-radius: 3px; margin-right: 5px; font-size: 10px; font-weight: bold; }
+    .time-badge { color: #8c8c8c; font-size: 10px; margin-left: 5px; }
+    .icon-success { color: #52c41a; font-weight:bold; margin-right: 4px; }
+    .icon-error { color: #ff4d4f; font-weight:bold; margin-right: 4px; }
+    .icon-quark { color: #1677ff; font-weight:bold; margin-right: 4px; }
+    .icon-baidu { color: #ff4d4f; font-weight:bold; margin-right: 4px; }
+    .icon-info { color: #8c8c8c; font-weight:bold; margin-right: 4px; }
+    .result-box { background: #fff; border: 1px solid #b7eb8f; padding: 15px; border-radius: 8px; margin-top: 20px; margin-bottom: 25px; background-color: #f6ffed; }
+    .running-badge { color: #0088ff; font-weight: bold; animation: pulse 1.5s infinite; }
+    @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.4; } 100% { opacity: 1; } }
+    .status-dot-green { display:inline-block; width:8px; height:8px; background:#52c41a; border-radius:50%; margin-right:6px; }
+    .status-dot-red { display:inline-block; width:8px; height:8px; background:#ff4d4f; border-radius:50%; margin-right:6px; }
+    .status-dot-gray { display:inline-block; width:8px; height:8px; background:#d9d9d9; border-radius:50%; margin-right:6px; }
+    </style>
+""", unsafe_allow_html=True)
 
 INVALID_CHARS_REGEX = re.compile(r'[^\u4e00-\u9fa5a-zA-Z0-9_\-\s]')
 
+# ==========================================
+# 2. 辅助函数
+# ==========================================
 def get_time_diff(start_time):
     diff = time.time() - start_time
     return f"{diff:.2f}s"
@@ -103,54 +180,9 @@ def send_notification(bark_key, pushdeer_key, title, body):
         try: requests.get(url, params=params, timeout=5)
         except: pass
 
-# --- JobManager (完全保持不变) ---
-@st.cache_resource
-class JobManager:
-    def __init__(self):
-        self.jobs = {} 
-
-    def _cleanup_old_jobs(self):
-        now = datetime.now()
-        expired_ids = [jid for jid, job in self.jobs.items() 
-                       if (now - job['created_at']).total_seconds() > 86400]
-        for jid in expired_ids:
-            del self.jobs[jid]
-
-    def create_job(self):
-        self._cleanup_old_jobs()
-        job_id = str(uuid.uuid4())[:8]
-        self.jobs[job_id] = {
-            "status": "running",
-            "logs": [],
-            "result_text": "",
-            "progress": {"current": 0, "total": 0},
-            "created_at": datetime.now(),
-            "summary": {}
-        }
-        return job_id
-
-    def get_job(self, job_id):
-        return self.jobs.get(job_id)
-
-    def add_log(self, job_id, message, type="info"):
-        if job_id in self.jobs:
-            timestamp = (datetime.now(timezone.utc) + timedelta(hours=8)).strftime("%H:%M:%S")
-            safe_message = html.escape(message)
-            self.jobs[job_id]["logs"].append({"time": timestamp, "msg": safe_message, "type": type})
-
-    def update_progress(self, job_id, current, total):
-        if job_id in self.jobs:
-            self.jobs[job_id]["progress"] = {"current": current, "total": total}
-
-    def complete_job(self, job_id, final_text, summary):
-        if job_id in self.jobs:
-            self.jobs[job_id]["status"] = "done"
-            self.jobs[job_id]["result_text"] = final_text
-            self.jobs[job_id]["summary"] = summary
-
-job_manager = JobManager()
-
-# --- Engines (完全保持不变) ---
+# ==========================================
+# 3. 引擎类 (功能未修改，保持原样)
+# ==========================================
 class QuarkEngine:
     def __init__(self, cookies: str):
         self.headers = {
@@ -327,7 +359,7 @@ class BaiduEngine:
         if is_inject and self.inject_cache:
             shareid = self.inject_cache['shareid']
             uk = self.inject_cache['uk']
-            fs_id_list_str = self.inject_cache['fsidlist']
+            fs_id_list_str = self.inject_cache['fsidlist'] 
         else:
             try:
                 url = url_info['url']
@@ -416,16 +448,16 @@ class BaiduEngine:
             return None, f"发生异常: {str(e)[:20]}...", None
 
 # ==========================================
-# 2. Worker Thread (增加参数支持多用户)
+# 4. 常量定义 (多用户模式下，这部分移到 Main 中动态生成)
 # ==========================================
+QUARK_SAVE_PATH = "来自：分享/LinkChanger"
+BAIDU_SAVE_PATH = "/我的资源/LinkChanger"
 
-# ⚠️ 注意：这里增加了一个 fixed_image_config 参数，因为多用户配置不同，必须从主线程传进来
-def worker_thread(job_id, input_text, quark_cookie, baidu_cookie, bark_key, pushdeer_key, fixed_image_config):
+# ==========================================
+# 5. 核心：后台线程 Worker (已修改：接收 image_config 参数)
+# ==========================================
+def worker_thread(job_id, input_text, quark_cookie, baidu_cookie, bark_key, pushdeer_key, image_config):
     
-    # 路径常量定义
-    QUARK_SAVE_PATH = "来自：分享/LinkChanger"
-    BAIDU_SAVE_PATH = "/我的资源/LinkChanger"
-
     async def async_worker():
         start_time = datetime.now()
         final_text = input_text
@@ -475,11 +507,12 @@ def worker_thread(job_id, input_text, quark_cookie, baidu_cookie, bark_key, push
                                 
                                 if new_url:
                                     log_msg = f"{step_prefix} 转存成功: {new_url} (耗时: {t_task_end})"
-                                    if fixed_image_config['quark']['enabled'] and new_fid:
+                                    # 🔥 修改点：使用传入的 image_config 字典，而不是全局变量
+                                    if image_config['quark']['enabled'] and new_fid:
                                         t_img = time.time()
-                                        res_url, res_msg, _ = await q_engine.process_url(fixed_image_config['quark']['url'], new_fid, is_inject=True)
+                                        res_url, res_msg, _ = await q_engine.process_url(image_config['quark']['url'], new_fid, is_inject=True)
                                         if res_url == "INJECT_OK": log_msg += f" + 植入(耗时:{get_time_diff(t_img)})"
-                                     
+                                    
                                     job_manager.add_log(job_id, log_msg, "success")
                                     final_text = final_text.replace(raw_url, new_url)
                                     success_count += 1
@@ -518,9 +551,10 @@ def worker_thread(job_id, input_text, quark_cookie, baidu_cookie, bark_key, push
                             
                             if new_url:
                                 log_msg = f"{step_prefix} 转存成功: {new_url} (耗时: {t_task_end})"
-                                if fixed_image_config['baidu']['enabled'] and new_dir_path:
+                                # 🔥 修改点：使用传入的 image_config 字典
+                                if image_config['baidu']['enabled'] and new_dir_path:
                                     t_img = time.time()
-                                    img_res_url, img_msg, _ = b_engine.process_url({'url': fixed_image_config['baidu']['url'], 'pwd': fixed_image_config['baidu']['pwd']}, new_dir_path, is_inject=True)
+                                    img_res_url, img_msg, _ = b_engine.process_url({'url': image_config['baidu']['url'], 'pwd': image_config['baidu']['pwd']}, new_dir_path, is_inject=True)
                                     if img_res_url == "INJECT_OK": log_msg += f" + 植入(耗时:{get_time_diff(t_img)})"
 
                                 job_manager.add_log(job_id, log_msg, "success")
@@ -546,109 +580,26 @@ def worker_thread(job_id, input_text, quark_cookie, baidu_cookie, bark_key, push
     asyncio.run(async_worker())
 
 # ==========================================
-# 3. 页面样式 (CSS)
+# 6. 主逻辑 (前端 UI + 多用户认证)
 # ==========================================
-st.markdown('<div id="top-anchor" style="position:absolute; top:-50px; visibility:hidden;"></div>', unsafe_allow_html=True)
-st.markdown("""
-    <style>
-    .block-container { padding-top: 32px !important; padding-bottom: 3rem; }
-    .stTextArea textarea { font-family: 'Source Code Pro', monospace; font-size: 14px; border-radius: 8px; }
-    .log-container { font-family: 'Menlo', monospace; font-size: 12px; display: flex; flex-direction: column; border: 1px solid #e0e0e0; border-radius: 10px; padding: 0; background: #fafafa; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
-    .log-item { display: flex; align-items: flex-start; padding: 8px 12px; border-bottom: 1px solid #f0f0f0; line-height: 1.6; transition: background 0.2s; }
-    .log-item:hover { background: #f0f7ff; }
-    .log-item:last-child { border-bottom: none; }
-    .log-time { color: #999; font-size: 11px; margin-right: 12px; min-width: 58px; text-align: right; flex-shrink: 0; padding-top: 1px; }
-    .log-msg { color: #333; flex-grow: 1; word-wrap: break-word; min-width: 0; }
-    .smart-link { display: inline-block; background: #e6f7ff; color: #1890ff; padding: 0 4px; border-radius: 3px; font-family: monospace; border: 1px solid #bae7ff; max-width: 180px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; vertical-align: bottom; font-size: 11px; cursor: text; }
-    .step-badge { display: inline-block; background: #f0f0f0; color: #666; padding: 0 4px; border-radius: 3px; margin-right: 5px; font-size: 10px; font-weight: bold; }
-    .time-badge { color: #8c8c8c; font-size: 10px; margin-left: 5px; }
-    .icon-success { color: #52c41a; font-weight:bold; margin-right: 4px; }
-    .icon-error { color: #ff4d4f; font-weight:bold; margin-right: 4px; }
-    .icon-quark { color: #1677ff; font-weight:bold; margin-right: 4px; }
-    .icon-baidu { color: #ff4d4f; font-weight:bold; margin-right: 4px; }
-    .icon-info { color: #8c8c8c; font-weight:bold; margin-right: 4px; }
-    .result-box { background: #fff; border: 1px solid #b7eb8f; padding: 15px; border-radius: 8px; margin-top: 20px; margin-bottom: 25px; background-color: #f6ffed; }
-    .running-badge { color: #0088ff; font-weight: bold; animation: pulse 1.5s infinite; }
-    @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.4; } 100% { opacity: 1; } }
-    .status-dot-green { display:inline-block; width:8px; height:8px; background:#52c41a; border-radius:50%; margin-right:6px; }
-    .status-dot-red { display:inline-block; width:8px; height:8px; background:#ff4d4f; border-radius:50%; margin-right:6px; }
-    .status-dot-gray { display:inline-block; width:8px; height:8px; background:#d9d9d9; border-radius:50%; margin-right:6px; }
-    .back-to-top { position: fixed; bottom: 80px; right: 20px; width: 40px; height: 40px; background-color: #333; border-radius: 50%; box-shadow: 0 2px 8px rgba(0,0,0,0.2); z-index: 999999; text-decoration: none; display: flex; align-items: center; justify-content: center; opacity: 0.6; transition: opacity 0.3s; }
-    .back-to-top:hover { opacity: 1; }
-    .back-to-top svg { width: 20px; height: 20px; stroke: white; }
-    </style>
-    <a href="#top-anchor" class="back-to-top" title="Top"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M4.5 10.5 12 3m0 0 7.5 7.5M12 3v18" /></svg></a>
-""", unsafe_allow_html=True)
 
-# ==========================================
-# 4. 多用户鉴权与配置加载模块 (Pro功能)
-# ==========================================
-def get_user_config(user_id):
-    """从 secrets 中读取特定用户的配置"""
-    try:
-        if "users" in st.secrets and user_id in st.secrets["users"]:
-            return st.secrets["users"][user_id]
-    except:
-        pass
-    return None
+# Cookie 管理器初始化
+@st.cache_resource(experimental_allow_widgets=True)
+def get_manager():
+    return stx.CookieManager()
 
-def login_page():
-    """多用户登录界面"""
-    st.markdown("<br><br><br>", unsafe_allow_html=True)
-    c1, c2, c3 = st.columns([1, 2, 1])
-    with c2:
-        st.title("🔐 身份验证")
-        st.info("请输入您的 用户ID (PIN码) 以继续。")
-        
-        # 尝试自动登录（如果URL有uid）
-        params = st.query_params
-        url_uid = params.get("uid", None)
-        
-        if url_uid:
-            if get_user_config(url_uid):
-                st.session_state["current_user_id"] = url_uid
-                st.success(f"欢迎回来, {url_uid}!")
-                time.sleep(0.5)
-                st.rerun()
-            else:
-                st.error("链接中的用户ID无效")
-
-        uid_input = st.text_input("用户ID / PIN", type="password")
-        if st.button("登录", type="primary", use_container_width=True):
-            if get_user_config(uid_input):
-                st.session_state["current_user_id"] = uid_input
-                st.toast("登录成功！", icon="🎉")
-                time.sleep(0.5)
-                st.rerun()
-            else:
-                st.error("❌ 用户ID无效，请检查 Secrets 配置")
-
-def logout():
-    if "current_user_id" in st.session_state:
-        del st.session_state["current_user_id"]
-    st.rerun()
-
-# ==========================================
-# 5. 主程序逻辑 (渲染APP)
-# ==========================================
 @st.cache_data(ttl=300) 
 def check_cookies_validity(q_c, b_c):
     status = {"quark": False, "baidu": False}
-    # 夸克检测
+    # ... 检测代码逻辑保持原样，省略 ...
     if q_c:
         try:
-            headers = {
-                'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'cookie': q_c,
-                'referer': 'https://pan.quark.cn/'
-            }
+            headers = { 'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36', 'cookie': q_c, 'referer': 'https://pan.quark.cn/' }
             params = {'pr': 'ucpro', 'fr': 'pc', '__dt': random.randint(100, 9999)}
             r = requests.get('https://pan.quark.cn/account/info', headers=headers, params=params, timeout=5)
             data = r.json()
-            if (data.get('code') == 0 or data.get('code') == 'OK') and data.get('data'):
-                status["quark"] = True
+            if (data.get('code') == 0 or data.get('code') == 'OK') and data.get('data'): status["quark"] = True
         except: pass
-    # 百度检测
     if b_c:
         try:
             b_eng = BaiduEngine(b_c)
@@ -656,62 +607,81 @@ def check_cookies_validity(q_c, b_c):
         except: pass
     return status
 
-def render_app(user_id):
-    user_conf = get_user_config(user_id)
-    if not user_conf:
-        st.error("配置文件读取失败，请重新登录")
-        logout()
-        return
+def auth_user():
+    """多用户认证流程"""
+    cookie_manager = get_manager()
+    
+    # 1. 获取 URL 中的 UID
+    uid = st.query_params.get("uid", None)
+    
+    # 2. 检查 UID 是否在 Secrets 中
+    if not uid or "users" not in st.secrets or uid not in st.secrets["users"]:
+        st.error("❌ 用户 ID 无效或未提供。请使用分配给您的专属链接访问。")
+        st.stop()
+        
+    user_conf = st.secrets["users"][uid]
+    stored_pin = str(user_conf.get("pin", ""))
+    
+    # 3. 检查 Cookie 是否有登录记录
+    cookie_auth_key = f"auth_{uid}"
+    cookie_val = cookie_manager.get(cookie_auth_key)
+    
+    # 如果 Cookie 验证通过，直接返回配置
+    if cookie_val and str(cookie_val) == "logged_in":
+        return uid, user_conf
+        
+    # 4. 显示登录界面
+    st.markdown("### 🔒 安全验证")
+    st.caption(f"欢迎回来，**{user_conf.get('name', '用户')}**")
+    
+    input_pin = st.text_input("请输入 PIN 码", type="password")
+    
+    if st.button("解锁"):
+        if input_pin == stored_pin:
+            # 登录成功，写入 Cookie (有效期 30 天)
+            cookie_manager.set(cookie_auth_key, "logged_in", expires_at=datetime.now() + timedelta(days=30))
+            st.success("登录成功！")
+            time.sleep(1)
+            st.rerun()
+        else:
+            st.error("🚫 密码错误")
+            
+    st.stop() # 阻止后续代码执行，直到验证通过
 
-    # === 读取当前用户的配置 ===
-    user_name = user_conf.get("name", user_id)
-    q_c = user_conf.get("q", "")
-    b_c = user_conf.get("b", "")
+def main():
+    # 1. 进行身份验证，获取当前用户的配置
+    uid, user_conf = auth_user()
+    
+    # 2. 从当前用户配置中提取变量
+    st.title(f"网盘转存助手 - {user_conf.get('name', '')}")
+    
     bark_key = user_conf.get("bark", "")
     pushdeer_key = user_conf.get("pushdeer", "")
+    q_c = user_conf.get("q", "")
+    b_c = user_conf.get("b", "")
     
-    # === 动态初始化图片植入配置 ===
+    # 构建当前用户的图片配置
     q_img_url = user_conf.get("q_img", "")
     b_img_url = user_conf.get("b_img", "")
-    b_img_pwd = user_conf.get("b_pwd", "") # 百度可能需要提取码
     
-    FIXED_IMAGE_CONFIG = {
+    current_image_config = {
         "quark": {
             "url": q_img_url,
             "enabled": bool(q_img_url and q_img_url.strip())
         },
         "baidu": {
             "url": b_img_url,
-            "pwd": b_img_pwd,
+            "pwd": user_conf.get("b_pwd", ""),
             "name": "公众号关注.jpg",
             "enabled": bool(b_img_url and b_img_url.strip())
         }
     }
 
-    # === 页面UI开始 ===
-    c_title, c_logout = st.columns([8, 1])
-    with c_title:
-        st.title(f"网盘转存助手 ({user_name})")
-    with c_logout:
-        if st.button("退出"):
-            logout()
-
     # 🟡 自动检测 Cookie 有效性
     cookie_status = check_cookies_validity(q_c, b_c)
 
     with st.sidebar:
-        st.header(f"👤 {user_name}")
-        st.caption(f"ID: {user_id}")
-        
-        # 生成专属链接功能
-        my_url = f"/?uid={user_id}"
-        st.markdown(f"**您的专属登录链接:**")
-        st.code(my_url, language="text")
-        st.caption("收藏此链接，下次直接进入无需输入PIN码。")
-        
-        st.divider()
         st.header("⚙️ 状态监控")
-        
         if not q_c:
             st.markdown('<span class="status-dot-gray"></span> 夸克: 未配置', unsafe_allow_html=True)
         elif cookie_status["quark"]:
@@ -727,19 +697,24 @@ def render_app(user_id):
             st.markdown('<span class="status-dot-red"></span> 百度: <span style="color:#ff4d4f">已失效</span>', unsafe_allow_html=True)
 
         st.divider()
-        
-        if FIXED_IMAGE_CONFIG['quark']['enabled']:
+        if current_image_config['quark']['enabled']:
             st.success("🖼️ 夸克植入: 开启")
         else:
             st.caption("⚪ 夸克植入: 关闭")
         
-        if FIXED_IMAGE_CONFIG['baidu']['enabled']:
+        if current_image_config['baidu']['enabled']:
             st.success("🖼️ 百度植入: 开启")
         else:
             st.caption("⚪ 百度植入: 关闭")
         
         if bark_key or pushdeer_key:
             st.info("📢 消息推送: 开启")
+            
+        # 退出登录按钮
+        if st.button("🚪 退出登录"):
+             cookie_manager = get_manager()
+             cookie_manager.delete(f"auth_{uid}")
+             st.rerun()
 
     query_params = st.query_params
     current_job_id = query_params.get("job_id", None)
@@ -758,28 +733,28 @@ def render_app(user_id):
 
             new_job_id = job_manager.create_job()
             
-            # 关键修改：将当前用户的 Cookie 和 配置 传给 Worker
-            t = threading.Thread(
-                target=worker_thread, 
-                args=(new_job_id, input_text, q_c, b_c, bark_key, pushdeer_key, FIXED_IMAGE_CONFIG)
-            )
+            # 🔥 修改点：传递 user_conf 中生成的 current_image_config
+            t = threading.Thread(target=worker_thread, args=(new_job_id, input_text, q_c, b_c, bark_key, pushdeer_key, current_image_config))
             t.start()
             
             st.query_params["job_id"] = new_job_id
             st.rerun()
 
     else:
+        # 任务详情页 UI 代码保持不变 (为了节省篇幅略去，逻辑与原代码一致)
+        # 你的原代码中这部分: job_data = job_manager.get_job(current_job_id)...
+        # 直到 if __name__ == "__main__": 之前的内容完全一样，不需要修改。
+        # 只需要将下面这段代码原样粘贴回来即可：
         job_data = job_manager.get_job(current_job_id)
-        
         if not job_data:
             st.error("❌ 任务不存在或已过期")
             if st.button("🔙 返回"):
-                # 清除 job_id 但保留 uid (如果是在URL里的话)
-                st.query_params["job_id"] = ""
+                st.query_params.clear()
+                # 保持 UID 参数，防止退出登录
+                st.query_params["uid"] = uid
                 st.rerun()
         else:
             status = job_data['status']
-            
             if status == "running":
                 st.markdown(f"### 🔄 运行中... <span class='running-badge'>RUNNING</span>", unsafe_allow_html=True)
                 st.caption(f"ID: `{current_job_id}`")
@@ -834,32 +809,25 @@ def render_app(user_id):
                 components.html(create_copy_button_html(res_text), height=80)
                 
                 if st.button("🗑️ 开始新任务", use_container_width=True):
-                    st.query_params["job_id"] = ""
+                    st.query_params.clear()
+                    st.query_params["uid"] = uid # 保持 UID
                     st.rerun()
             else:
                 time.sleep(2) 
                 st.rerun()
 
-# ==========================================
-# 6. 入口函数 (Main)
-# ==========================================
-def main():
-    # 检查 Session State 中是否有登录信息
-    if "current_user_id" in st.session_state:
-        # 已登录 -> 渲染主APP
-        render_app(st.session_state["current_user_id"])
-    else:
-        # 未登录 -> 检查URL参数或渲染登录页
-        params = st.query_params
-        url_uid = params.get("uid", None)
-        
-        # 浏览器记录登录状态逻辑：
-        # 如果 URL 带 ?uid=xxx 且有效，直接写入 session 并跳转
-        if url_uid and get_user_config(url_uid):
-             st.session_state["current_user_id"] = url_uid
-             st.rerun()
-        else:
-             login_page()
+st.markdown("""
+    <style>
+    .back-to-top { position: fixed; bottom: 80px; right: 20px; width: 40px; height: 40px; background-color: #333; border-radius: 50%; box-shadow: 0 2px 8px rgba(0,0,0,0.2); z-index: 999999; text-decoration: none; display: flex; align-items: center; justify-content: center; opacity: 0.6; transition: opacity 0.3s; }
+    .back-to-top:hover { opacity: 1; }
+    .back-to-top svg { width: 20px; height: 20px; stroke: white; }
+    </style>
+    <a href="#top-anchor" class="back-to-top" title="Top">
+        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2.5" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M4.5 10.5 12 3m0 0 7.5 7.5M12 3v18" />
+        </svg>
+    </a>
+""", unsafe_allow_html=True)
 
 if __name__ == "__main__":
     main()
