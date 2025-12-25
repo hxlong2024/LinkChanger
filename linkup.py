@@ -13,6 +13,7 @@ import uuid
 import html
 from urllib.parse import quote
 from datetime import datetime, timedelta, timezone
+from typing import Union, List, Any
 from retrying import retry
 
 # ==========================================
@@ -22,7 +23,6 @@ st.set_page_config(page_title="网盘转存助手", page_icon="📂", layout="wi
 
 st.markdown("""
     <style>
-    /* 手机端日志优化 */
     .log-container {
         font-family: 'Menlo', monospace; font-size: 12px;
         border: 1px solid #e0e0e0; border-radius: 8px;
@@ -33,14 +33,11 @@ st.markdown("""
     .log-time { color: #999; font-size: 11px; margin-right: 8px; min-width: 55px; }
     .log-msg { color: #333; word-break: break-all; }
     .smart-link { background: #e6f7ff; color: #1890ff; padding: 0 4px; border-radius: 3px; font-size: 11px; }
-    
-    /* 状态点 */
     .status-dot-green { color:#52c41a; margin-right:4px; }
     .status-dot-gray { color:#d9d9d9; margin-right:4px; }
     </style>
 """, unsafe_allow_html=True)
 
-# 基础常量
 QUARK_SAVE_PATH = "来自：分享/LinkChanger"
 BAIDU_SAVE_PATH = "/我的资源/LinkChanger"
 
@@ -90,17 +87,18 @@ class JobManager:
 job_manager = JobManager()
 
 # ==========================================
-# 2. 引擎类 (升级：广告缓存 + 自动目录)
+# 2. 引擎类 (夸克 & 百度)
 # ==========================================
 class QuarkEngine:
     def __init__(self, cookies: str):
         self.headers = {
             'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'cookie': cookies, 'referer': 'https://pan.quark.cn/'
+            'cookie': cookies,
+            'origin': 'https://pan.quark.cn',
+            'referer': 'https://pan.quark.cn/',
         }
         self.client = httpx.AsyncClient(timeout=45.0, headers=self.headers, follow_redirects=True)
-        # ✨ 新增：缓存植入文件的信息
-        self.inject_cache = None
+        self.inject_cache = None # 广告缓存
 
     async def close(self): await self.client.aclose()
     def _params(self): return {'pr': 'ucpro', 'fr': 'pc', '__dt': random.randint(100, 9999), '__t': int(time.time() * 1000)}
@@ -114,44 +112,33 @@ class QuarkEngine:
         except: pass
         return None
 
-    async def _mkdir(self, name, pdir_fid):
-        try:
-            data = {"file_name": name, "pdir_fid": pdir_fid, "dir_init_lock": False}
-            r = await self.client.post('https://drive-pc.quark.cn/1/clouddrive/file/mkdir', json=data, params=self._params())
-            if r.json().get('code') == 0: return r.json()['data']['fid']
-        except: pass
-        return None
-
-    async def ensure_path(self, path: str):
+    async def get_folder_id(self, path: str):
         parts = path.split('/')
         curr_id = '0'
         for part in parts:
             if not part: continue
-            found_fid = None
+            found = False
             params = self._params()
-            params.update({'pdir_fid': curr_id, '_page': 1, '_size': 50, '_fetch_total': 'false'})
+            params.update({'pdir_fid': curr_id, '_page': 1, '_size': 50, '_fetch_total': 'false', '_sort': 'file_type:asc,updated_at:desc'})
             try:
                 r = await self.client.get('https://drive-pc.quark.cn/1/clouddrive/file/sort', params=params)
                 for item in r.json().get('data', {}).get('list', []):
                     if item['file_name'] == part and item['dir']:
-                        found_fid = item['fid']; break
+                        curr_id = item['fid']; found = True; break
             except: pass
-            
-            if not found_fid: found_fid = await self._mkdir(part, curr_id)
-            if not found_fid: return None
-            curr_id = found_fid
+            if not found: return None 
         return curr_id
 
     async def process_url(self, url: str, target_fid: str, is_inject: bool = False):
-        # ✨ 缓存逻辑：如果是植入模式，且缓存有数据，直接使用
+        # 🚀 优化：有缓存则直接读取
         if is_inject and self.inject_cache:
             source_fids = self.inject_cache['fids']
             source_tokens = self.inject_cache['tokens']
             pwd_id = self.inject_cache['pwd_id']
             stoken = self.inject_cache['stoken']
         else:
-            # --- 正常联网解析流程 ---
             try:
+                if '/s/' not in url: return None, "格式错误", None
                 pwd_id = url.split('/s/')[-1].split('?')[0].split('#')[0]
                 match = re.search(r'[?&]pwd=([a-zA-Z0-9]+)', url)
                 passcode = match.group(1) if match else ""
@@ -166,73 +153,62 @@ class QuarkEngine:
                 r = await self.client.get("https://drive-pc.quark.cn/1/clouddrive/share/sharepage/detail", params=params)
                 items = r.json().get('data', {}).get('list', [])
                 if not items: return None, "空分享", None
-                
                 source_fids = [i['fid'] for i in items]
                 source_tokens = [i['share_fid_token'] for i in items]
-                
-                # ✨ 如果是植入模式，解析成功后写入缓存
+                first_name = items[0]['file_name']
+
+                # 🚀 写入缓存
                 if is_inject:
-                    self.inject_cache = {
-                        'fids': source_fids, 'tokens': source_tokens, 
-                        'pwd_id': pwd_id, 'stoken': stoken
-                    }
+                    self.inject_cache = {'fids': source_fids, 'tokens': source_tokens, 'pwd_id': pwd_id, 'stoken': stoken}
             except: return None, "解析异常", None
 
-        # --- 通用转存流程 ---
         try:
-            save_data = {"fid_list": source_fids, "fid_token_list": source_tokens, 
-                         "to_pdir_fid": target_fid, "pwd_id": pwd_id, "stoken": stoken, "pdir_fid": "0", "scene": "link"}
+            save_data = {"fid_list": source_fids, "fid_token_list": source_tokens, "to_pdir_fid": target_fid, 
+                         "pwd_id": pwd_id, "stoken": stoken, "pdir_fid": "0", "scene": "link"}
             r = await self.client.post("https://drive.quark.cn/1/clouddrive/share/sharepage/save", json=save_data, params=self._params())
             if r.json().get('code') not in [0, 'OK']: return None, f"转存失败: {r.json().get('message')}", None
             task_id = r.json().get('data', {}).get('task_id')
-            
-            if is_inject: return "INJECT_OK", "植入成功", None
+        except: return None, "转存请求失败", None
 
-            # 正常文件需要等待完成并分享
-            for _ in range(8):
-                await asyncio.sleep(1)
-                try:
-                    params = self._params(); params['task_id'] = task_id
-                    r = await self.client.get("https://drive-pc.quark.cn/1/clouddrive/task", params=params)
-                    if r.json().get('data', {}).get('status') == 2: break
-                except: pass
-            
-            await asyncio.sleep(1.5)
-            new_fid = None
-            first_name = items[0]['file_name'] if 'items' in locals() else "Unknown" # items只在非缓存时有，这里简化处理
-            
-            # 如果走了缓存，items可能没定义，需要重新处理下名字逻辑，
-            # 但主流程process_url(is_inject=False)不会走缓存，所以items一定有。
-            # 只有is_inject=True才会走缓存，而植入模式直接返回INJECT_OK，不需要下面分享逻辑。
-            
-            params = self._params(); params.update({'pdir_fid': target_fid, '_page': 1, '_size': 20, '_sort': 'updated_at:desc'})
+        if is_inject: return "INJECT_OK", "植入成功", None
+
+        for _ in range(8):
+            await asyncio.sleep(1)
             try:
-                r = await self.client.get('https://drive-pc.quark.cn/1/clouddrive/file/sort', params=params)
-                for item in r.json().get('data', {}).get('list', []):
-                    if item['file_name'] == first_name: new_fid = item['fid']; break
-                if not new_fid and r.json().get('data', {}).get('list'): new_fid = r.json()['data']['list'][0]['fid']
+                params = self._params(); params['task_id'] = task_id
+                r = await self.client.get("https://drive-pc.quark.cn/1/clouddrive/task", params=params)
+                if r.json().get('data', {}).get('status') == 2: break
             except: pass
-            
-            if not new_fid: return None, "已存入但无法分享", None
-            
-            share_data = {"fid_list": [new_fid], "title": first_name, "url_type": 1, "expired_type": 1}
+
+        await asyncio.sleep(1.5)
+        new_fid = None
+        params = self._params(); params.update({'pdir_fid': target_fid, '_page': 1, '_size': 20, '_sort': 'updated_at:desc'})
+        try:
+            r = await self.client.get('https://drive-pc.quark.cn/1/clouddrive/file/sort', params=params)
+            for item in r.json().get('data', {}).get('list', []):
+                if item['file_name'] == first_name: new_fid = item['fid']; break
+            if not new_fid and r.json().get('data', {}).get('list'): new_fid = r.json()['data']['list'][0]['fid']
+        except: pass
+        
+        if not new_fid: return None, "已存入但无法分享", None
+        share_data = {"fid_list": [new_fid], "title": first_name, "url_type": 1, "expired_type": 1}
+        try:
             r = await self.client.post("https://drive-pc.quark.cn/1/clouddrive/share", json=share_data, params=self._params())
             share_task_id = r.json().get('data', {}).get('task_id')
             await asyncio.sleep(0.5)
-            params = self._params(); params.update({'task_id': share_task_id})
+            params = self._params(); params.update({'task_id': share_task_id, 'retry_index': 0})
             r = await self.client.get("https://drive-pc.quark.cn/1/clouddrive/task", params=params)
             share_id = r.json().get('data', {}).get('share_id')
             r = await self.client.post("https://drive-pc.quark.cn/1/clouddrive/share/password", json={"share_id": share_id}, params=self._params())
             return r.json()['data']['share_url'], "成功", new_fid
-        except Exception as e: return None, f"异常: {str(e)[:20]}", None
+        except: return None, "✅ 已存入网盘 (但分享创建异常)", None
 
 class BaiduEngine:
     def __init__(self, cookies: str):
         self.s = requests.Session()
-        self.headers = {'User-Agent': 'Mozilla/5.0', 'Referer': 'https://pan.baidu.com', 'Cookie': cookies}
+        self.headers = {'User-Agent': 'Mozilla/5.0', 'Referer': 'https://pan.baidu.com', 'Cookie': "".join(cookies.split())}
         self.bdstoken = ''
-        # ✨ 新增：缓存
-        self.inject_cache = None
+        self.inject_cache = None # 广告缓存
         requests.packages.urllib3.disable_warnings()
 
     def update_cookie(self, bdclnd):
@@ -259,18 +235,15 @@ class BaiduEngine:
         except: pass
 
     def process_url(self, url_info: dict, root_path: str, is_inject: bool = False):
-        # ✨ 缓存逻辑
+        # 🚀 优化：有缓存直接读取
         if is_inject and self.inject_cache:
             shareid = self.inject_cache['shareid']
             uk = self.inject_cache['uk']
-            fs_id_list_str = self.inject_cache['fsidlist'] # 已经是字符串格式 "[123,456]"
-            # 直接跳到 Transfer 步骤
+            fs_id_list_str = self.inject_cache['fsidlist']
         else:
-            # --- 正常联网解析 ---
             try:
                 url, pwd = url_info['url'], url_info['pwd']
                 clean_url = url.split('?')[0]
-                
                 if pwd:
                     surl = re.search(r'(?:surl=|/s/1|/s/)([\w\-]+)', clean_url)
                     if not surl: return None, "URL格式错误", None
@@ -279,21 +252,16 @@ class BaiduEngine:
                     else: return None, "提取码错误", None
 
                 content = self.s.get(clean_url, headers=self.headers, verify=False).text
-                fs_id_list = re.findall(r'"fs_id":(\d+?),', content)
-                if not fs_id_list: return None, "无文件", None
-                
                 shareid = re.search(r'"shareid":(\d+?),', content).group(1)
                 uk = re.search(r'"share_uk":"(\d+?)",', content).group(1)
+                fs_id_list = re.findall(r'"fs_id":(\d+?),', content)
+                if not fs_id_list: return None, "无文件", None
                 fs_id_list_str = f"[{','.join(fs_id_list)}]"
                 
-                # ✨ 写入缓存
                 if is_inject:
-                    self.inject_cache = {
-                        'shareid': shareid, 'uk': uk, 'fsidlist': fs_id_list_str
-                    }
+                    self.inject_cache = {'shareid': shareid, 'uk': uk, 'fsidlist': fs_id_list_str}
             except Exception as e: return None, f"异常: {str(e)[:20]}", None
 
-        # --- 转存逻辑 ---
         try:
             if is_inject: save_path = root_path
             else:
@@ -303,14 +271,11 @@ class BaiduEngine:
                 save_path = f"{root_path}/{final_folder}"
                 self.create_dir(save_path) 
 
-            r = self.s.post('https://pan.baidu.com/share/transfer', 
-                            params={'shareid': shareid, 'from': uk, 'bdstoken': self.bdstoken}, 
-                            data={'fsidlist': fs_id_list_str, 'path': save_path}, 
-                            headers=self.headers, verify=False, timeout=20)
+            r = self.s.post('https://pan.baidu.com/share/transfer', params={'shareid': shareid, 'from': uk, 'bdstoken': self.bdstoken}, 
+                            data={'fsidlist': fs_id_list_str, 'path': save_path}, headers=self.headers, verify=False, timeout=20)
             
             if r.json().get('errno') == 12 and is_inject: return "INJECT_OK", "已存在", save_path
             if r.json().get('errno') != 0: return None, f"转存失败({r.json().get('errno')})", None
-
             if is_inject: return "INJECT_OK", "成功", save_path
 
             # 分享
@@ -318,17 +283,15 @@ class BaiduEngine:
             target_fsid = None
             for item in r.json().get('list', []):
                 if item['server_filename'] == final_folder: target_fsid = item['fs_id']; break
-            
             if not target_fsid: return None, "获取文件失败", None
             new_pwd = ''.join(random.choices(string.ascii_letters + string.digits, k=4))
             r = self.s.post('https://pan.baidu.com/share/set', params={'bdstoken': self.bdstoken, 'channel': 'chunlei', 'clienttype': 0, 'web': 1}, data={'period': 0, 'pwd': new_pwd, 'fid_list': f'[{target_fsid}]', 'schannel': 4}, headers=self.headers, verify=False)
             if r.json()['errno'] == 0: return f"{r.json()['link']}?pwd={new_pwd}", "成功", save_path 
             return None, "分享失败", None
-
         except Exception as e: return None, f"异常: {str(e)[:20]}", None
 
 # ==========================================
-# 3. Worker 线程 (升级：短链解析)
+# 3. Worker 线程 (已更新：接收用户动态配置)
 # ==========================================
 def send_notification(bark_key, pushdeer_key, title, body):
     if bark_key:
@@ -341,122 +304,123 @@ def send_notification(bark_key, pushdeer_key, title, body):
         try: requests.get(url, params=params, timeout=5)
         except: pass
 
-# ✨ 新增：短链接解析助手
-async def resolve_short_links(text):
-    # 匹配非网盘域名的 http/https 链接
-    # 这里使用一个宽泛的正则，然后排除掉我们已知的长链接域名
-    urls = list(re.finditer(r'(https?://[^\s,;"\'\)]+)', text))
-    if not urls: return text
-    
-    replacements = {}
-    
-    async def resolve_one(short_url):
-        # 如果已经是夸克或百度，跳过
-        if "pan.quark.cn" in short_url or "pan.baidu.com" in short_url:
-            return
-        
-        try:
-            # 使用 HEAD 请求获取真实地址，禁止重定向跟踪来获取Location，或者开启跟踪获取最终URL
-            async with httpx.AsyncClient(verify=False, timeout=5.0) as client:
-                resp = await client.head(short_url, follow_redirects=True)
-                long_url = str(resp.url)
-                # 只有解析出了有效网盘链接才替换
-                if "pan.quark.cn" in long_url or "pan.baidu.com" in long_url:
-                    replacements[short_url] = long_url
-        except:
-            pass # 解析失败则保留原样
+def smart_shorten_url(text):
+    return re.sub(r'(https?://[^\s]+)', r'<span class="smart-link">LINK</span>', text)
 
-    # 并发解析
-    tasks = [resolve_one(m.group(1)) for m in urls]
-    if tasks:
-        await asyncio.gather(*tasks)
-    
-    # 替换文本
-    new_text = text
-    for short, long in replacements.items():
-        new_text = new_text.replace(short, long)
-        
-    return new_text
+def create_copy_button_html(text):
+    safe_text = json.dumps(text)[1:-1]
+    return f"""<button onclick="navigator.clipboard.writeText('{safe_text}')" style="width:100%;padding:8px;border:1px solid #ddd;border-radius:4px;background:#fff;cursor:pointer;">📋 点击复制结果</button>"""
+
+def sanitize_filename(name):
+    return re.sub(r'[^\u4e00-\u9fa5a-zA-Z0-9_\-\s]', '', name).strip()
+
+def extract_smart_folder_name(full_text, match_start):
+    # 简单的名字提取逻辑
+    return f"Res_{int(time.time())}"
 
 def worker_thread(job_id, input_text, quark_cookie, baidu_cookie, bark_key, pushdeer_key, inject_config):
     async def async_worker():
-        # ✨ 1. 先进行短链解析
-        job_manager.add_log(job_id, "正在扫描链接...", "info")
-        final_text = await resolve_short_links(input_text)
-        
+        start_time = datetime.now()
+        final_text = input_text
         success_count = 0
+        current_idx = 0
         
-        q_matches = list(re.finditer(r'(https://pan\.quark\.cn/s/[a-zA-Z0-9]+(?:\?pwd=[a-zA-Z0-9]+)?)', final_text))
-        b_matches = list(re.finditer(r'(https?://pan\.baidu\.com/s/[a-zA-Z0-9_\-]+(?:\?pwd=[a-zA-Z0-9]+)?)', final_text))
+        quark_regex = re.compile(r'(https://pan\.quark\.cn/s/[a-zA-Z0-9]+(?:\?pwd=[a-zA-Z0-9]+)?)')
+        baidu_regex = re.compile(r'(https?://pan\.baidu\.com/s/[a-zA-Z0-9_\-]+(?:\?pwd=[a-zA-Z0-9]+)?)')
+        q_matches = list(quark_regex.finditer(input_text))
+        b_matches = list(baidu_regex.finditer(input_text))
         total_tasks = len(q_matches) + len(b_matches)
-        
-        if total_tasks == 0:
-            job_manager.add_log(job_id, "未检测到有效网盘链接", "error")
         
         job_manager.update_progress(job_id, 0, total_tasks)
         q_engine = QuarkEngine(quark_cookie) if q_matches else None
         b_engine = BaiduEngine(baidu_cookie) if b_matches else None
 
         try:
-            # 夸克处理
-            if q_matches and quark_cookie:
-                job_manager.add_log(job_id, "正在登录夸克...", "quark")
-                user = await q_engine.check_login()
-                if not user: job_manager.add_log(job_id, "夸克登录失败，请检查Cookie", "error")
+            # --- 夸克 ---
+            if q_matches:
+                if not quark_cookie: job_manager.add_log(job_id, "夸克：未配置Cookie，跳过", "error")
                 else:
-                    job_manager.add_log(job_id, f"夸克登录成功: {user}", "success")
-                    root_fid = await q_engine.ensure_path(QUARK_SAVE_PATH)
-                    for i, match in enumerate(q_matches):
-                        job_manager.update_progress(job_id, i+1, total_tasks)
-                        raw_url = match.group(1)
-                        new_url, msg, new_fid = await q_engine.process_url(raw_url, root_fid)
-                        if new_url:
-                            final_text = final_text.replace(raw_url, new_url)
-                            job_manager.add_log(job_id, f"✅ {new_url}", "success")
-                            success_count += 1
-                            if inject_config['quark']['enabled'] and new_fid:
-                                # ✨ 缓存会在 process_url 内部自动处理
-                                await q_engine.process_url(inject_config['quark']['url'], new_fid, is_inject=True)
+                    job_manager.add_log(job_id, "开始处理夸克...", "quark")
+                    user = await q_engine.check_login()
+                    if not user: job_manager.add_log(job_id, "夸克登录失败", "error")
+                    else:
+                        job_manager.add_log(job_id, f"登录成功: {user}", "success")
+                        root_fid = await q_engine.get_folder_id(QUARK_SAVE_PATH)
+                        if not root_fid: job_manager.add_log(job_id, "目录不存在", "error")
                         else:
-                            job_manager.add_log(job_id, f"❌ {msg}", "error")
-                        await asyncio.sleep(2)
+                            for match in q_matches:
+                                current_idx += 1; step_prefix = f"[{current_idx}/{total_tasks}]"
+                                job_manager.update_progress(job_id, current_idx, total_tasks)
+                                
+                                t_task = time.time()
+                                raw_url = match.group(1)
+                                new_url, msg, new_fid = await q_engine.process_url(raw_url, root_fid)
+                                
+                                if new_url:
+                                    log_msg = f"{step_prefix} 转存成功: {new_url} (耗时: {get_time_diff(t_task)})"
+                                    # 🚀 动态植入配置
+                                    if inject_config['quark']['enabled'] and new_fid:
+                                        t_img = time.time()
+                                        res_url, _, _ = await q_engine.process_url(inject_config['quark']['url'], new_fid, is_inject=True)
+                                        if res_url == "INJECT_OK": log_msg += f" + 植入(耗时:{get_time_diff(t_img)})"
+                                    
+                                    job_manager.add_log(job_id, log_msg, "success")
+                                    final_text = final_text.replace(raw_url, new_url)
+                                    success_count += 1
+                                else:
+                                    job_manager.add_log(job_id, f"{step_prefix} {msg}", "error")
+                                await asyncio.sleep(random.uniform(2, 4))
 
-            # 百度处理
-            if b_matches and baidu_cookie:
-                job_manager.add_log(job_id, "正在登录百度...", "baidu")
-                if not b_engine.init_token(): job_manager.add_log(job_id, "百度登录失败，请检查Cookie", "error")
+            # --- 百度 ---
+            if b_matches:
+                if not baidu_cookie: job_manager.add_log(job_id, "百度：未配置Cookie，跳过", "error")
                 else:
-                    job_manager.add_log(job_id, f"百度登录成功", "success")
-                    if not b_engine.check_dir_exists(BAIDU_SAVE_PATH): b_engine.create_dir(BAIDU_SAVE_PATH)
-                    start_idx = len(q_matches)
-                    for i, match in enumerate(b_matches):
-                        job_manager.update_progress(job_id, start_idx+i+1, total_tasks)
-                        raw_url = match.group(0)
-                        pwd = re.search(r'pwd=([a-zA-Z0-9]{4})', raw_url)
-                        pwd = pwd.group(1) if pwd else ""
-                        name = f"Res_{int(time.time())}"
-                        new_url, msg, new_path = b_engine.process_url({'url': raw_url, 'pwd': pwd, 'name': name}, BAIDU_SAVE_PATH)
-                        if new_url:
-                            final_text = final_text.replace(raw_url, new_url)
-                            job_manager.add_log(job_id, f"✅ {new_url}", "success")
-                            success_count += 1
-                            if inject_config['baidu']['enabled'] and new_path:
-                                # ✨ 缓存会在 process_url 内部自动处理
-                                b_engine.process_url({'url': inject_config['baidu']['url'], 'pwd': inject_config['baidu']['pwd']}, new_path, is_inject=True)
-                        else:
-                            job_manager.add_log(job_id, f"❌ {msg}", "error")
-                        time.sleep(2)
+                    job_manager.add_log(job_id, "开始处理百度...", "baidu")
+                    if not b_engine.init_token(): job_manager.add_log(job_id, "百度登录失败", "error")
+                    else:
+                        job_manager.add_log(job_id, "登录成功", "success")
+                        if not b_engine.check_dir_exists(BAIDU_SAVE_PATH): b_engine.create_dir(BAIDU_SAVE_PATH)
+                        
+                        for match in b_matches:
+                            current_idx += 1; step_prefix = f"[{current_idx}/{total_tasks}]"
+                            job_manager.update_progress(job_id, current_idx, total_tasks)
+                            
+                            t_task = time.time()
+                            raw_url = match.group(1)
+                            pwd = re.search(r'(?:\?pwd=|&pwd=|\s+|提取码[:：]?\s*)([a-zA-Z0-9]{4})', match.group(0))
+                            pwd = pwd.group(1) if pwd else ""
+                            name = extract_smart_folder_name(input_text, match.start())
+                            
+                            new_url, msg, new_dir_path = b_engine.process_url({'url': raw_url, 'pwd': pwd, 'name': name}, BAIDU_SAVE_PATH)
+                            
+                            if new_url:
+                                log_msg = f"{step_prefix} 转存成功: {new_url} (耗时: {get_time_diff(t_task)})"
+                                # 🚀 动态植入配置
+                                if inject_config['baidu']['enabled'] and new_dir_path:
+                                    t_img = time.time()
+                                    img_res_url, _, _ = b_engine.process_url({'url': inject_config['baidu']['url'], 'pwd': inject_config['baidu']['pwd']}, new_dir_path, is_inject=True)
+                                    if img_res_url == "INJECT_OK": log_msg += f" + 植入(耗时:{get_time_diff(t_img)})"
+
+                                job_manager.add_log(job_id, log_msg, "success")
+                                final_text = final_text.replace(raw_url, new_url)
+                                success_count += 1
+                            else:
+                                job_manager.add_log(job_id, f"{step_prefix} {msg}", "error")
+                            time.sleep(random.uniform(2, 4))
 
         finally:
             if q_engine: await q_engine.close()
-            job_manager.complete_job(job_id, final_text, {"success": success_count, "total": total_tasks})
+            summary = {"success": success_count, "total": total_tasks, "duration": str(datetime.now() - start_time)[:-4]}
+            job_manager.complete_job(job_id, final_text, summary)
             if bark_key or pushdeer_key:
-                send_notification(bark_key, pushdeer_key, "转存结束", f"成功: {success_count}/{total_tasks}")
+                send_notification(bark_key, pushdeer_key, f"转存完成 ({success_count}/{total_tasks})", "处理结束")
 
     asyncio.run(async_worker())
 
+def get_time_diff(t): return f"{time.time() - t:.2f}s"
+
 # ==========================================
-# 4. 主逻辑 (Secrets + Magic Link)
+# 4. 主逻辑 (Secrets + 多用户)
 # ==========================================
 def get_user_from_secrets(uid):
     """从 Secrets 的 [users] 节点读取用户配置"""
@@ -466,19 +430,12 @@ def get_user_from_secrets(uid):
     except: pass
     return None
 
-def smart_shorten_url(text):
-    return re.sub(r'(https?://[^\s]+)', r'<span class="smart-link">LINK</span>', text)
-
-def create_copy_button_html(text):
-    safe_text = json.dumps(text)[1:-1]
-    return f"""<button onclick="navigator.clipboard.writeText('{safe_text}')" style="width:100%;padding:8px;border:1px solid #ddd;border-radius:4px;background:#fff;cursor:pointer;">📋 点击复制结果</button>"""
-
 def main():
     query_params = st.query_params
     uid = query_params.get("uid", None)
     job_id = query_params.get("job_id", None)
     
-    # 状态 A: 游客模式
+    # 状态 A: 游客模式 (拒绝访问)
     if not uid:
         st.title("☁️ 网盘转存助手")
         st.info("👋 欢迎！此为内部工具。")
@@ -491,16 +448,19 @@ def main():
         st.error(f"⛔ **访问拒绝**：无效的用户 ID `{uid}`")
         st.stop()
 
+    # ✨ 核心：读取用户级配置 (如果没填则为空字符串)
     current_name = user_data.get('name', 'User')
     q_cookie = user_data.get('q', '')
     b_cookie = user_data.get('b', '')
     user_bark = user_data.get('bark', '')         
     user_pushdeer = user_data.get('pushdeer', '') 
     
+    # ✨ 核心：构建用户级植入配置
     user_q_img = user_data.get('q_img', '')
     user_b_img = user_data.get('b_img', '')
     user_b_pwd = user_data.get('b_pwd', '')
     
+    # 组装植入配置，传给 worker_thread
     inject_config = {
         "quark": {"url": user_q_img, "enabled": bool(user_q_img)},
         "baidu": {"url": user_b_img, "pwd": user_b_pwd, "enabled": bool(user_b_img)}
@@ -524,11 +484,12 @@ def main():
         if not q_cookie and not b_cookie:
             st.error("您尚未配置任何网盘 Cookie，请联系管理员。")
         else:
-            input_text = st.text_area("📝 粘贴链接...", height=150, placeholder="支持短链接、夸克、百度网盘链接混合粘贴")
+            input_text = st.text_area("📝 粘贴链接...", height=150, placeholder="支持夸克、百度网盘链接混合粘贴")
             if st.button("🚀 开始转存", type="primary", use_container_width=True):
                 if not input_text.strip(): st.toast("请输入内容"); return
                 
                 new_job_id = job_manager.create_job()
+                # 🚀 启动线程：传入用户专属配置
                 t = threading.Thread(target=worker_thread, args=(
                     new_job_id, input_text, q_cookie, b_cookie, 
                     user_bark, user_pushdeer, inject_config
@@ -536,10 +497,11 @@ def main():
                 t.start()
                 
                 st.query_params["job_id"] = new_job_id
-                st.query_params["uid"] = uid 
+                st.query_params["uid"] = uid # 保持 UID
                 st.rerun()
 
     else:
+        # 任务查看区 (逻辑基本不变，只需确保返回按钮带上 UID)
         job = job_manager.get_job(job_id)
         if not job:
             st.warning("任务已过期或不存在")
@@ -569,6 +531,18 @@ def main():
                     st.query_params.clear(); st.query_params["uid"] = uid; st.rerun()
             else:
                 time.sleep(2); st.rerun()
+
+st.markdown("""
+    <style>
+    .back-to-top {
+        position: fixed; bottom: 80px; right: 20px; width: 40px; height: 40px;
+        background-color: #333; border-radius: 50%; opacity: 0.6;
+        display: flex; align-items: center; justify-content: center; z-index: 999;
+    }
+    .back-to-top svg { width: 20px; height: 20px; stroke: white; }
+    </style>
+    <a href="#top-anchor" class="back-to-top"><svg viewBox="0 0 24 24" fill="none" stroke-width="2.5"><path d="M4.5 10.5 12 3m0 0 7.5 7.5M12 3v18" stroke-linecap="round" stroke-linejoin="round"/></svg></a>
+""", unsafe_allow_html=True)
 
 if __name__ == "__main__":
     main()
